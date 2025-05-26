@@ -15,7 +15,10 @@ from app.models.schemas import (
     QuestionSchema,
     ReportResponse,
     SessionCreateResponse,
+    SessionCreateSchema,
     SessionInputsPayload,
+    SessionInterviewInfoPayload,
+    SessionProfilePayload,
     SessionSchema,
 )
 from app.services import firebase_crud, llm_service
@@ -62,8 +65,17 @@ class GenerateReportResponse(BaseModel):
 
 
 @router.post("/sessions", response_model=SessionCreateResponse)
-def create_session():
-    result = firebase_crud.create_session()
+def create_session(req: SessionCreateSchema):
+    missing = []
+    if not req.id:
+        missing.append("id")
+    if not req.password:
+        missing.append("password")
+    if missing:
+        raise HTTPException(
+            status_code=422, detail=f"필수 입력 누락: {', '.join(missing)}"
+        )
+    result = firebase_crud.create_session(req)
     if not result:
         raise HTTPException(status_code=500, detail="세션 생성 실패")
     session_id, code = result
@@ -90,8 +102,12 @@ def join_session(code: str, req: SessionJoinRequest):
     return SessionSchema(**data, id=session_id)
 
 
-@router.post("/sessions/{code}/generate_persona", response_model=PersonaResponse)
-def generate_persona_api(code: str, req: PersonaRequest):
+@router.post("/sessions/{code}/persona", response_model=PersonaResponse)
+def persona_api(code: str, req: PersonaRequest):
+
+    session_id = firebase_crud.get_session_id_by_code(code)
+
+    # TODO: 사용자의 입력 정보를 통해서 rag_info 생성 로직 구현해야함
     rag_info = search_rag(req.company_name, req.job_role)
     if not rag_info:
         raise HTTPException(
@@ -100,7 +116,7 @@ def generate_persona_api(code: str, req: PersonaRequest):
     persona_dict = llm_service.generate_persona(rag_info)
     persona = persona_dict.get("persona", "") if isinstance(persona_dict, dict) else ""
     # Firestore에 persona 저장
-    session_id = firebase_crud.get_session_id_by_code(code)
+
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
     db = firebase_crud.get_db()
@@ -164,32 +180,58 @@ def generate_questions_api(code: str, req: GenerateQuestionsRequest):
 #     )
 
 
-@router.post("/sessions/{code}/inputs")
-def save_inputs(code: str, payload: SessionInputsPayload):
+@router.post("/sessions/{code}/profile")
+def save_profile(code: str, payload: SessionProfilePayload):
     # 필수 입력 검증
     missing = []
-    if not payload.name:
-        missing.append("이름")
-    if not payload.password:
-        missing.append("비밀번호")
-    if (
-        not payload.education
-        or not payload.education.school
-        or not payload.education.major
-    ):
-        missing.append("학력(학교/전공)")
-    if not payload.company_name:
-        missing.append("지원 회사")
-    if not payload.job_role:
-        missing.append("지원 직군")
+
+    if not payload.age:
+        missing.append("age")
+    if not payload.gender:
+        missing.append("gender")
+    if payload.education:
+        if not payload.education.school:
+            missing.append("education.school")
+        if not payload.education.major:
+            missing.append("education.major")
+        if not payload.education.gradYear:
+            missing.append("education.gradYear")
+    if not payload.organization:
+        missing.append("organization")
+    if not payload.position:
+        missing.append("position")
     if missing:
         raise HTTPException(
             status_code=422, detail=f"필수 입력 누락: {', '.join(missing)}"
         )
+
     session_id = firebase_crud.get_session_id_by_code(code)
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
-    ok = firebase_crud.save_session_inputs(session_id, payload)
+    ok = firebase_crud.save_session_profile(session_id, payload)
+    if not ok:
+        raise HTTPException(status_code=500, detail="입력 저장 실패")
+    return {"success": True}
+
+
+@router.post("/sessions/{code}/interview_info")
+def save_interview_info(code: str, payload: SessionInterviewInfoPayload):
+    session_id = firebase_crud.get_session_id_by_code(code)
+
+    missing = []
+    if not payload.company_name:
+        missing.append("company_name")
+    if not payload.job_role:
+        missing.append("job_role")
+    if not payload.self_intro:
+        missing.append("self_intro")
+    if missing:
+        raise HTTPException(
+            status_code=422, detail=f"필수 입력 누락: {', '.join(missing)}"
+        )
+    if not session_id:
+        raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
+    ok = firebase_crud.save_session_interview_info(session_id, payload)
     if not ok:
         raise HTTPException(status_code=500, detail="입력 저장 실패")
     return {"success": True}

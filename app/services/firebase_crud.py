@@ -13,7 +13,10 @@ from app.models.schemas import (
     EvaluationSchema,
     InteractionLogSchema,
     ReportSchema,
+    SessionCreateSchema,
     SessionInputsPayload,
+    SessionInterviewInfoPayload,
+    SessionProfilePayload,
     SessionSchema,
 )
 
@@ -28,14 +31,17 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_session() -> Optional[Tuple[str, str]]:
+def create_session(req: SessionCreateSchema) -> Optional[Tuple[str, str]]:
     db = get_db()
     code = secrets.token_hex(3).upper()
     session_ref = db.collection("sessions").document()
+    hashed_password = get_password_hash(req.password)
     session_data = {
         "code": code,
         "status": "ready",
         "created_at": datetime.now(timezone.utc),
+        "id": req.id,
+        "pw_hash": hashed_password,
     }
     session_ref.set(session_data)
     return session_ref.id, code
@@ -66,6 +72,46 @@ def save_session_inputs(session_id: str, inputs: SessionInputsPayload) -> bool:
         "job_role": inputs.job_role,
         "self_intro": inputs.self_intro,
         "status": "inputs_saved",
+        "updated_at": datetime.now(timezone.utc),
+    }
+    update_data_cleaned = {k: v for k, v in update_data.items() if v is not None}
+    try:
+        session_ref.update(update_data_cleaned)
+        return True
+    except Exception:
+        return False
+
+
+def save_session_profile(session_id: str, inputs: SessionProfilePayload) -> bool:
+    db = get_db()
+    session_ref = db.collection("sessions").document(session_id)
+    update_data = {
+        "name": inputs.name,
+        "age": inputs.age,
+        "gender": inputs.gender,
+        "organization": inputs.organization,
+        "position": inputs.position,
+        "status": "profile_saved",
+        "updated_at": datetime.now(timezone.utc),
+    }
+    update_data_cleaned = {k: v for k, v in update_data.items() if v is not None}
+    try:
+        session_ref.update(update_data_cleaned)
+        return True
+    except Exception:
+        return False
+
+
+def save_session_interview_info(
+    session_id: str, inputs: SessionInterviewInfoPayload
+) -> bool:
+    db = get_db()
+    session_ref = db.collection("sessions").document(session_id)
+    update_data = {
+        "company_name": inputs.company_name,
+        "job_role": inputs.job_role,
+        "self_intro": inputs.self_intro,
+        "status": "interview_info_saved",
         "updated_at": datetime.now(timezone.utc),
     }
     update_data_cleaned = {k: v for k, v in update_data.items() if v is not None}

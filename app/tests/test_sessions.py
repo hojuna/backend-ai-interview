@@ -18,40 +18,119 @@ def test_create_session():
 # 아래는 예시 코드
 
 
-def test_save_inputs():
+def test_save_profile_and_interview_info():
     client = TestClient(app)
     # 세션 생성
     res = client.post("/sessions")
     code = res.json()["code"]
-    payload = {
+    # 프로필 저장 (education 포함)
+    profile_payload = {
         "name": "홍길동",
-        "password": "testpw",
-        "email": "test@example.com",
-        "education": {"school": "서울대", "major": "컴공", "gradYear": 2024},
-        "career_summary": "신입",
+        "age": 25,
+        "gender": "남성",
+        "organization": "테스트대학교",
+        "position": "학생",
+        "education": {"school": "서울대", "major": "컴퓨터공학", "gradYear": 2024},
+    }
+    res_profile = client.post(f"/sessions/{code}/profile", json=profile_payload)
+    assert res_profile.status_code == 200
+    assert res_profile.json()["success"] == True
+    # 프로필 저장 (education 없이)
+    profile_payload_no_edu = {
+        "name": "홍길동",
+        "age": 25,
+        "gender": "남성",
+        "organization": "테스트대학교",
+        "position": "학생",
+    }
+    res_profile2 = client.post(f"/sessions/{code}/profile", json=profile_payload_no_edu)
+    assert res_profile2.status_code == 200
+    assert res_profile2.json()["success"] == True
+    # 면접 정보 저장
+    interview_payload = {
         "company_name": "테스트회사",
         "job_role": "백엔드",
         "self_intro": "열심히 하겠습니다.",
     }
-    res2 = client.post(f"/sessions/{code}/inputs", json=payload)
-    assert res2.status_code == 200
-    assert res2.json()["success"] == True
+    res_interview = client.post(
+        f"/sessions/{code}/interview_info", json=interview_payload
+    )
+    assert res_interview.status_code == 200
+    assert res_interview.json()["success"] == True
 
 
-def test_save_inputs_missing_required():
+def test_save_profile_missing_required():
     client = TestClient(app)
     res = client.post("/sessions")
     code = res.json()["code"]
-    # 회사명, 직군, 학력(major) 누락
-    payload = {
+    # age, gender 누락
+    profile_payload = {
         "name": "홍길동",
-        "password": "testpw",
-        "education": {"school": "서울대"},
+        "organization": "테스트대학교",
+        "position": "학생",
+    }
+    res_profile = client.post(f"/sessions/{code}/profile", json=profile_payload)
+    assert res_profile.status_code == 422
+    assert "필수 입력 누락" in res_profile.json()["detail"]
+    # education 필수값 누락 (school 없음)
+    profile_payload_edu_missing = {
+        "name": "홍길동",
+        "age": 25,
+        "gender": "남성",
+        "organization": "테스트대학교",
+        "position": "학생",
+        "education": {"major": "컴퓨터공학", "gradYear": 2024},
+    }
+    res_profile2 = client.post(
+        f"/sessions/{code}/profile", json=profile_payload_edu_missing
+    )
+    assert res_profile2.status_code == 422
+    assert "education.school" in res_profile2.json()["detail"]
+    # education 필수값 누락 (major 없음)
+    profile_payload_edu_missing2 = {
+        "name": "홍길동",
+        "age": 25,
+        "gender": "남성",
+        "organization": "테스트대학교",
+        "position": "학생",
+        "education": {"school": "서울대", "gradYear": 2024},
+    }
+    res_profile3 = client.post(
+        f"/sessions/{code}/profile", json=profile_payload_edu_missing2
+    )
+    assert res_profile3.status_code == 422
+    assert "education.major" in res_profile3.json()["detail"]
+    # education 필수값 누락 (gradYear 없음)
+    profile_payload_edu_missing3 = {
+        "name": "홍길동",
+        "age": 25,
+        "gender": "남성",
+        "organization": "테스트대학교",
+        "position": "학생",
+        "education": {"school": "서울대", "major": "컴퓨터공학"},
+    }
+    res_profile4 = client.post(
+        f"/sessions/{code}/profile", json=profile_payload_edu_missing3
+    )
+    assert res_profile4.status_code == 422
+    assert "education.gradYear" in res_profile4.json()["detail"]
+
+
+def test_save_interview_info_missing_required():
+    client = TestClient(app)
+    res = client.post("/sessions")
+    code = res.json()["code"]
+    # company_name, job_role 누락
+    interview_payload = {
         "company_name": "",
         "job_role": "",
+        "self_intro": "열심히 하겠습니다.",
     }
-    res2 = client.post(f"/sessions/{code}/inputs", json=payload)
-    assert res2.status_code == 422
+    res_interview = client.post(
+        f"/sessions/{code}/interview_info", json=interview_payload
+    )
+    assert res_interview.status_code == 422
+    assert "필수 입력 누락" in res_interview.json()["detail"]
 
 
 # def test_parse_job_url_success():

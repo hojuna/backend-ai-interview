@@ -4,6 +4,11 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, EmailStr, Field
 
 
+class SessionCreateSchema(BaseModel):
+    id: str
+    password: str
+
+
 class EducationSchema(BaseModel):
     school: str
     major: str
@@ -70,6 +75,21 @@ class SessionInputsPayload(BaseModel):
     company_name: str
     job_role: str
     self_intro: Optional[str] = None
+
+
+class SessionProfilePayload(BaseModel):
+    name: str
+    age: int
+    education: Optional[EducationSchema] = None
+    gender: str
+    organization: str
+    position: str
+
+
+class SessionInterviewInfoPayload(BaseModel):
+    company_name: str
+    job_role: str
+    self_intro: str
 
 
 class ReportResponse(ReportSchema):
