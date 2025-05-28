@@ -1,25 +1,24 @@
 import os
 import re
 import uuid
+from datetime import datetime
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from app.models.schemas import (
     EvaluationSchema,
     InteractionLogSchema,
-    QuestionSchema,
     ReportResponse,
     SessionCreateResponse,
     SessionCreateSchema,
-    SessionInputsPayload,
     SessionInterviewInfoPayload,
+    SessionJoinResponse,
     SessionProfilePayload,
-    SessionSchema,
 )
 from app.services import firebase_crud, llm_service
 from app.services.rag_temp_db import search_rag
@@ -28,7 +27,7 @@ router = APIRouter()
 
 
 class SessionJoinRequest(BaseModel):
-    name: str
+    username: str
     password: str
 
 
@@ -64,11 +63,16 @@ class GenerateReportResponse(BaseModel):
     summary: str
 
 
+@router.get("/")
+def root():
+    return {"message": "AI Interview API 서버입니다."}
+
+
 @router.post("/sessions", response_model=SessionCreateResponse)
 def create_session(req: SessionCreateSchema):
     missing = []
-    if not req.id:
-        missing.append("id")
+    if not req.username:
+        missing.append("username")
     if not req.password:
         missing.append("password")
     if missing:
@@ -79,11 +83,23 @@ def create_session(req: SessionCreateSchema):
     if not result:
         raise HTTPException(status_code=500, detail="세션 생성 실패")
     session_id, code = result
-    return SessionCreateResponse(code=code, session_id=session_id)
+    return SessionCreateResponse(
+        code=code, session_id=session_id, created_at=datetime.now()
+    )
 
 
-@router.post("/sessions/{code}/join", response_model=SessionSchema)
+@router.post("/sessions/{code}", response_model=SessionJoinResponse)
 def join_session(code: str, req: SessionJoinRequest):
+
+    missing = []
+    if not req.username:
+        missing.append("username")
+    if not req.password:
+        missing.append("password")
+    if missing:
+        raise HTTPException(
+            status_code=400, detail=f"필수 입력 누락: {', '.join(missing)}"
+        )
     session_id = firebase_crud.get_session_id_by_code(code)
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
@@ -94,21 +110,27 @@ def join_session(code: str, req: SessionJoinRequest):
         raise HTTPException(status_code=404, detail="세션이 존재하지 않습니다.")
     data = doc.to_dict()
     # 이름, 비밀번호 검증
-    if data.get("name") != req.name:
-        raise HTTPException(status_code=401, detail="이름이 일치하지 않습니다.")
     if not firebase_crud.verify_password(req.password, data.get("pw_hash", "")):
         raise HTTPException(status_code=401, detail="비밀번호가 일치하지 않습니다.")
-    # Pydantic 모델로 변환
-    return SessionSchema(**data, id=session_id)
+
+    return SessionJoinResponse(session_id=session_id, created_at=datetime.now())
 
 
 @router.post("/sessions/{code}/persona", response_model=PersonaResponse)
-def persona_api(code: str, req: PersonaRequest):
+def persona_api(code: str):
 
     session_id = firebase_crud.get_session_id_by_code(code)
+    db = firebase_crud.get_db()
+    doc = db.collection("sessions").document(session_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="세션이 존재하지 않습니다.")
+    data = doc.to_dict()
+    company = data.get("company")
+    position = data.get("position")
 
     # TODO: 사용자의 입력 정보를 통해서 rag_info 생성 로직 구현해야함
-    rag_info = search_rag(req.company_name, req.job_role)
+    # 현재는 (naver, backend engineer), (kakao, frontend engineer) 두 가지 케이스만 있음
+    rag_info = search_rag(company, position)
     if not rag_info:
         raise HTTPException(
             status_code=404, detail="RAG DB에서 회사/직군 정보를 찾을 수 없습니다."
@@ -119,15 +141,13 @@ def persona_api(code: str, req: PersonaRequest):
 
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
-    db = firebase_crud.get_db()
+
     db.collection("sessions").document(session_id).update({"persona": persona})
     return PersonaResponse(persona=persona)
 
 
-@router.post(
-    "/sessions/{code}/generate_questions", response_model=GenerateQuestionsResponse
-)
-def generate_questions_api(code: str, req: GenerateQuestionsRequest):
+@router.post("/sessions/{code}/questions", response_model=GenerateQuestionsResponse)
+def questions_api(code: str, req: GenerateQuestionsRequest):
     session_id = firebase_crud.get_session_id_by_code(code)
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
@@ -165,53 +185,29 @@ def generate_questions_api(code: str, req: GenerateQuestionsRequest):
     return GenerateQuestionsResponse(questions=questions_with_meta)
 
 
-# @router.post("/sessions/{code}/parse_job_url", response_model=JobUrlParseResponse)
-# def parse_job_url(code: str, req: JobUrlRequest):
-#     # 예시: URL에서 회사명/직군 추출 (실제 구현은 크롤링/정규식 등 활용)
-#     # 예: https://jobs.example.com/naver/backend-engineer
-#     m = re.search(r"jobs\\.\w+\\.com/(\w+)/(\w+)", req.url)
-#     if m:
-#         company = m.group(1).capitalize()
-#         role = m.group(2).replace("-", " ").capitalize()
-#         return JobUrlParseResponse(company_name=company, job_role=role)
-#     raise HTTPException(
-#         status_code=422,
-#         detail="URL에서 회사/직군 정보를 추출할 수 없습니다. 수동 입력을 이용해 주세요.",
-#     )
-
-
 @router.post("/sessions/{code}/profile")
 def save_profile(code: str, payload: SessionProfilePayload):
     # 필수 입력 검증
     missing = []
-
+    if not payload.name:
+        missing.append("name")
     if not payload.age:
         missing.append("age")
     if not payload.gender:
         missing.append("gender")
-    if payload.education:
-        if not payload.education.school:
-            missing.append("education.school")
-        if not payload.education.major:
-            missing.append("education.major")
-        if not payload.education.gradYear:
-            missing.append("education.gradYear")
-    if not payload.organization:
-        missing.append("organization")
-    if not payload.position:
-        missing.append("position")
+    if not payload.email:
+        missing.append("email")
     if missing:
         raise HTTPException(
-            status_code=422, detail=f"필수 입력 누락: {', '.join(missing)}"
+            status_code=400, detail=f"필수 입력 누락: {', '.join(missing)}"
         )
-
     session_id = firebase_crud.get_session_id_by_code(code)
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
     ok = firebase_crud.save_session_profile(session_id, payload)
     if not ok:
         raise HTTPException(status_code=500, detail="입력 저장 실패")
-    return {"success": True}
+    return {"message": "Profile created successfully"}
 
 
 @router.post("/sessions/{code}/interview_info")
@@ -219,22 +215,22 @@ def save_interview_info(code: str, payload: SessionInterviewInfoPayload):
     session_id = firebase_crud.get_session_id_by_code(code)
 
     missing = []
-    if not payload.company_name:
-        missing.append("company_name")
-    if not payload.job_role:
-        missing.append("job_role")
+    if not payload.company:
+        missing.append("company")
+    if not payload.position:
+        missing.append("position")
     if not payload.self_intro:
         missing.append("self_intro")
     if missing:
         raise HTTPException(
-            status_code=422, detail=f"필수 입력 누락: {', '.join(missing)}"
+            status_code=400, detail=f"필수 입력 누락: {', '.join(missing)}"
         )
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
     ok = firebase_crud.save_session_interview_info(session_id, payload)
     if not ok:
         raise HTTPException(status_code=500, detail="입력 저장 실패")
-    return {"success": True}
+    return {"message": "Interview info saved successfully"}
 
 
 @router.websocket("/sessions/{code}/chat")
@@ -351,6 +347,7 @@ async def chat_ws(websocket: WebSocket, code: str):
                 if avg_score is not None and avg_score < 3:
                     need_followup = True
             turn += 1
+        firebase_crud.save_chat_end(session_id)
         await websocket.send_json(
             {"event": "면접 종료", "message": "모든 질문이 소진되었습니다."}
         )
@@ -359,44 +356,42 @@ async def chat_ws(websocket: WebSocket, code: str):
         pass
 
 
-@router.post("/sessions/{code}/generate_report", response_model=GenerateReportResponse)
-def generate_report_api(code: str):
+@router.post("/sessions/{code}/chat/end")
+def end_session(code: str):
     session_id = firebase_crud.get_session_id_by_code(code)
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
+    status = firebase_crud.get_session_status(session_id)
+    if status != "chat_end":
+        raise HTTPException(status_code=500, detail="면접 종료 전 채팅을 종료해주세요.")
+
+    # eval 추가
+    return {
+        "message": "Interview session ended successfully",
+        "final_evaluation": "in-progress",
+    }
+
+
+@router.post("/sessions/{code}/final_eval")
+def final_eval_session(code: str):
+    session_id = firebase_crud.get_session_id_by_code(code)
+    if not session_id:
+        raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
+    status = firebase_crud.get_session_status(session_id)
+    if status != "chat_end":
+        raise HTTPException(status_code=500, detail="면접이 아직 종료되지 않았습니다.")
+
+    # 해당 세션의 인터랙션만 추출
     db = firebase_crud.get_db()
-    session_doc = db.collection("sessions").document(session_id).get()
-    if not session_doc.exists:
-        raise HTTPException(status_code=404, detail="세션이 존재하지 않습니다.")
-    session_data = session_doc.to_dict()
-    # InteractionLog 취합
-    interactions = list(
-        db.collection("sessions")
-        .document(session_id)
-        .collection("interactions")
-        .stream()
+    interactions_ref = (
+        db.collection("sessions").document(session_id).collection("interactions")
     )
+    interactions = list(interactions_ref.stream())
     logs = [x.to_dict() for x in interactions]
-    # LLM으로 요약/분석(임시)
-    summary_prompt = f"""
-    아래는 신입 개발자 모의면접 세션의 질문/답변/평가 기록입니다. 전체 면접을 요약하고, 강점/개선점/최종 총평을 10줄 이내로 정리해줘.
-    {logs}
-    """
-    summary = llm_service.ask_llm(summary_prompt)
-    # HTML/PDF 생성
-    html = firebase_crud.render_report_html(session_data, logs, summary)
-    reports_dir = os.path.join(os.getcwd(), "reports")
-    os.makedirs(reports_dir, exist_ok=True)
-    pdf_path = os.path.join(reports_dir, f"report_{session_id}.pdf")
-    # wkhtmltopdf 경로가 필요하면 환경변수나 기본값 사용
-    wkhtmltopdf_path = os.environ.get("WKHTMLTOPDF_PATH") or "wkhtmltopdf"
-    firebase_crud.generate_pdf_from_html(html, pdf_path, wkhtmltopdf_path)
-    # 파일 URL (로컬 경로 예시)
-    report_url = f"/reports/report_{session_id}.pdf"
-    db.collection("sessions").document(session_id).update(
-        {"report": {"url": report_url, "report_type": "pdf", "summary": summary}}
-    )
-    return GenerateReportResponse(url=report_url, report_type="pdf", summary=summary)
+    result = llm_service.final_eval(logs)
+
+    db.collection("sessions").document(session_id).update({"final_eval": result})
+    return result
 
 
 @router.get("/sessions/{code}/report", response_model=ReportResponse)
