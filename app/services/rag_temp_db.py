@@ -24,7 +24,7 @@ RAG_FAKE_DB = {
 }
 
 
-def search_rag(company_name: str, job_role: str) -> dict:
+def search_rag(company: str, position: str) -> dict:
     # 실제 벡터 DB 검색 대신 dict에서 조회
-    key = (company_name, job_role)
+    key = (company, position)
     return RAG_FAKE_DB.get(key, {})

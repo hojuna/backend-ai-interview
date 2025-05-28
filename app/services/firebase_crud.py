@@ -3,9 +3,7 @@ import secrets
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-import pdfkit
 from google.cloud.firestore_v1.base_query import FieldFilter
-from jinja2 import Environment, FileSystemLoader
 from passlib.context import CryptContext
 
 from app.core.firebase import get_db
@@ -13,7 +11,9 @@ from app.models.schemas import (
     EvaluationSchema,
     InteractionLogSchema,
     ReportSchema,
-    SessionInputsPayload,
+    SessionCreateSchema,
+    SessionInterviewInfoPayload,
+    SessionProfilePayload,
     SessionSchema,
 )
 
@@ -28,14 +28,24 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_session() -> Optional[Tuple[str, str]]:
+def get_session_status(session_id: str) -> Optional[str]:
+    db = get_db()
+    session_ref = db.collection("sessions").document(session_id)
+    session_data = session_ref.get().to_dict()
+    return session_data.get("status")
+
+
+def create_session(req: SessionCreateSchema) -> Optional[Tuple[str, str]]:
     db = get_db()
     code = secrets.token_hex(3).upper()
     session_ref = db.collection("sessions").document()
+    hashed_password = get_password_hash(req.password)
     session_data = {
         "code": code,
         "status": "ready",
         "created_at": datetime.now(timezone.utc),
+        "username": req.username,
+        "pw_hash": hashed_password,
     }
     session_ref.set(session_data)
     return session_ref.id, code
@@ -51,21 +61,49 @@ def get_session_id_by_code(code: str) -> Optional[str]:
     return None
 
 
-def save_session_inputs(session_id: str, inputs: SessionInputsPayload) -> bool:
+def save_session_profile(session_id: str, inputs: SessionProfilePayload) -> bool:
     db = get_db()
     session_ref = db.collection("sessions").document(session_id)
-    hashed_password = get_password_hash(inputs.password)
-    education_data = inputs.education.model_dump() if inputs.education else None
     update_data = {
-        "name": inputs.name,
-        "pw_hash": hashed_password,
+        "age": inputs.age,
+        "gender": inputs.gender,
         "email": inputs.email,
-        "education": education_data,
-        "career_summary": inputs.career_summary,
-        "company_name": inputs.company_name,
-        "job_role": inputs.job_role,
+        "status": "profile_saved",
+        "updated_at": datetime.now(timezone.utc),
+    }
+    update_data_cleaned = {k: v for k, v in update_data.items() if v is not None}
+    try:
+        session_ref.update(update_data_cleaned)
+        return True
+    except Exception:
+        return False
+
+
+def save_session_interview_info(
+    session_id: str, inputs: SessionInterviewInfoPayload
+) -> bool:
+    db = get_db()
+    session_ref = db.collection("sessions").document(session_id)
+    update_data = {
+        "company": inputs.company,
+        "position": inputs.position,
         "self_intro": inputs.self_intro,
-        "status": "inputs_saved",
+        "status": "interview_info_saved",
+        "updated_at": datetime.now(timezone.utc),
+    }
+    update_data_cleaned = {k: v for k, v in update_data.items() if v is not None}
+    try:
+        session_ref.update(update_data_cleaned)
+        return True
+    except Exception:
+        return False
+
+
+def save_chat_end(session_id: str) -> bool:
+    db = get_db()
+    session_ref = db.collection("sessions").document(session_id)
+    update_data = {
+        "status": "chat_end",
         "updated_at": datetime.now(timezone.utc),
     }
     update_data_cleaned = {k: v for k, v in update_data.items() if v is not None}
@@ -95,18 +133,36 @@ def add_interaction(
         return None
 
 
-def render_report_html(session_data, logs, summary):
-    env = Environment(loader=FileSystemLoader("templates"))
-    template = env.get_template("report.html")
-    html = template.render(session=session_data, logs=logs, summary=summary)
-    return html
-
-
-def generate_pdf_from_html(
-    html: str, out_path: str, wkhtmltopdf_path: Optional[str] = None
-):
-    config = None
-    if wkhtmltopdf_path:
-        config = pdfkit.configuration(wkhtmltopdf=wkhtmltopdf_path)
-    pdfkit.from_string(html, out_path, configuration=config)
-    return out_path
+def get_all_questions_and_answers() -> Tuple[list, list]:
+    """
+    모든 세션의 모든 인터랙션(질문/응답)을 리스트로 반환합니다.
+    반환 예시: [{ 'session_id': ..., 'turn': ..., 'question': ..., 'answer': ... }, ...]
+    """
+    db = get_db()
+    result = []
+    eval_result = []
+    sessions = db.collection("sessions").stream()
+    for session in sessions:
+        session_id = session.id
+        interactions_ref = (
+            db.collection("sessions").document(session_id).collection("interactions")
+        )
+        interactions = interactions_ref.stream()
+        for interaction in interactions:
+            data = interaction.to_dict()
+            result.append(
+                {
+                    "session_id": session_id,
+                    "turn": data.get("turn"),
+                    "question": data.get("question"),
+                    "answer": data.get("answer"),
+                }
+            )
+            eval_result.append(
+                {
+                    "session_id": session_id,
+                    "turn": data.get("turn"),
+                    "evaluation": data.get("evaluation"),
+                }
+            )
+    return result, eval_result

@@ -8,8 +8,6 @@ from dotenv import load_dotenv
 # .env 파일에서 환경변수 자동 로드
 load_dotenv()
 
-print("API KEY:", os.environ.get("GEMINI_API_KEY"))
-
 
 def ask_llm(prompt: str, model: str = "gemini/gemini-2.0-flash") -> str:
     max_retries = 2
@@ -86,7 +84,9 @@ def evaluate_answer(question: str, answer: str) -> Dict:
         return {}
 
 
-def generate_persona(rag_info: dict) -> dict:
+def generate_persona(
+    rag_info: dict,
+) -> dict:
     prompt = f"""
     아래 회사 정보와 채용 공고, 기술스택, 가치관, 샘플 질문을 참고해서
     신입 개발자 면접관의 페르소나(성격, 질문 스타일, 중시하는 가치 등)를 3~4문장으로 요약해줘.
@@ -99,6 +99,7 @@ def generate_persona(rag_info: dict) -> dict:
     답변 json 형식:
     {{"persona": "페르소나 요약"}}
     """.strip()
+
     persona = ask_llm(prompt)
     try:
         persona_dict = json.loads(persona)
@@ -133,3 +134,121 @@ def insufficient_judgment(persona: str, q_and_a_history: list) -> Dict:
         return {}
     except Exception:
         return {}
+
+
+def final_eval(logs: list) -> dict:
+    """
+    logs: [{question, answer, evaluation: [{score: [...], feedback: ...}]}]
+    아래와 같은 구조로 반환:
+    {
+        'total_score': float,  # 전체 평균
+        'question_count': int,
+        'category_scores': {카테고리: 평균점수, ...},
+        'category_feedbacks': {카테고리: [피드백, ...], ...},
+        'questions': [
+            {
+                'question': str,
+                'answer': str,
+                'scores': [...],
+                'feedback': str
+            },
+            ...
+        ],
+        'final_feedback': str  # LLM 요약
+    }
+    """
+    categories = [
+        "기술 이해도",
+        "문제 해결력",
+        "기초 지식 응용력",
+        "코드 구현력",
+        "의사소통",
+        "태도",
+    ]
+    category_scores = {cat: [] for cat in categories}
+    category_feedbacks = {cat: [] for cat in categories}
+    questions = []
+    total_scores = []
+    for log in logs:
+        evals = log.get("evaluation")
+        if not evals or not isinstance(evals, list) or len(evals) == 0:
+            continue
+        eval_item = evals[0] if isinstance(evals[0], dict) else None
+        if not eval_item:
+            continue
+        scores = eval_item.get("score")
+        feedback = eval_item.get("feedback")
+        if not scores or not isinstance(scores, list) or len(scores) != 6:
+            continue
+        for i, cat in enumerate(categories):
+            try:
+                score = float(scores[i])
+                category_scores[cat].append(score)
+                if feedback:
+                    category_feedbacks[cat].append(feedback)
+            except Exception:
+                pass
+        total_scores.extend(
+            [
+                float(s)
+                for s in scores
+                if isinstance(s, (int, float, str))
+                and str(s).replace(".", "", 1).isdigit()
+            ]
+        )
+        questions.append(
+            {
+                "question": log.get("question"),
+                "answer": log.get("answer"),
+                "scores": scores,
+                "feedback": feedback,
+            }
+        )
+    # 평균 계산
+    avg_total = round(sum(total_scores) / len(total_scores), 2) if total_scores else 0.0
+    avg_category = {
+        cat: round(sum(vals) / len(vals), 2) if vals else 0.0
+        for cat, vals in category_scores.items()
+    }
+    # LLM 최종 피드백
+    summary_prompt = f"""
+    아래는 신입 개발자 모의면접 세션의 질문/응답/평가 기록입니다. 전체 면접을 요약하고, 강점/개선점/최종 총평을 10줄 이내로 정리해줘.\n{logs}
+    답변 json 형식:
+    {{
+        "final_feedback": "최종 총평"
+    }}
+    """
+    final_feedback = ask_llm(summary_prompt)
+    try:
+        final_feedback_dict = json.loads(final_feedback)
+        if isinstance(final_feedback_dict, dict):
+            final_feedback = final_feedback_dict.get("final_feedback", "")
+        else:
+            final_feedback = ""
+    except Exception:
+        final_feedback = ""
+    return {
+        "total_score": avg_total,
+        "question_count": len(questions),
+        "category_scores": avg_category,
+        "category_feedbacks": category_feedbacks,
+        "questions": questions,
+        "final_feedback": final_feedback,
+    }
+
+
+def answer_question_with_llm(question: str) -> str:
+    """
+    질문 dict 리스트를 받아 각 질문에 대해 실제 LLM(ask_llm)로 답변 리스트를 반환한다.
+    예: [{"question": "자기소개 해주세요."}, ...] -> ["저는 ...", ...]
+    """
+    prompt = (
+        f"아래 면접 질문에 대해 신입 개발자 지원자 입장에서 답변해줘.\n질문: {question}"
+    )
+
+    response = litellm.completion(
+        model="gemini/gemini-2.0-flash",
+        messages=[{"role": "user", "content": prompt}],
+        stream=False,
+    )
+    return response.choices[0].message.content
