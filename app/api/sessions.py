@@ -233,7 +233,7 @@ def save_interview_info(code: str, payload: SessionInterviewInfoPayload):
     return {"message": "Interview info saved successfully"}
 
 
-@router.websocket("/sessions/{code}/chat")
+@router.websocket("/sessions/{code}/ws/chat")
 async def chat_ws(websocket: WebSocket, code: str):
     await websocket.accept()
     session_id = firebase_crud.get_session_id_by_code(code)
@@ -394,19 +394,19 @@ def final_eval_session(code: str):
     return result
 
 
-@router.get("/sessions/{code}/report", response_model=ReportResponse)
-def get_report(code: str):
-    session_id = firebase_crud.get_session_id_by_code(code)
-    if not session_id:
-        raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
-    db = firebase_crud.get_db()
-    doc = db.collection("sessions").document(session_id).get()
-    if not doc.exists:
-        raise HTTPException(status_code=404, detail="세션이 존재하지 않습니다.")
-    data = doc.to_dict()
-    report = data.get("report")
-    if not report:
-        raise HTTPException(
-            status_code=404, detail="리포트가 아직 생성되지 않았습니다."
-        )
-    return ReportResponse(**report)
+# @router.get("/sessions/{code}/report", response_model=ReportResponse)
+# def get_report(code: str):
+#     session_id = firebase_crud.get_session_id_by_code(code)
+#     if not session_id:
+#         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
+#     db = firebase_crud.get_db()
+#     doc = db.collection("sessions").document(session_id).get()
+#     if not doc.exists:
+#         raise HTTPException(status_code=404, detail="세션이 존재하지 않습니다.")
+#     data = doc.to_dict()
+#     report = data.get("report")
+#     if not report:
+#         raise HTTPException(
+#             status_code=404, detail="리포트가 아직 생성되지 않았습니다."
+#         )
+#     return ReportResponse(**report)
