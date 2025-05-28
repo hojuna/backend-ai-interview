@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+
+# 환경 변수 파일
+.env
+
+# VSCode 설정
+.vscode/
+
+# 데이터/결과/임시 파일
+*.json
+*.html
+*.pdf
+
+# 임시 폴더
+temp/
+data/
+reports/
+
+# firebase 인증키 등 민감정보
+duri-intern-firebase-adminsdk-fbsvc-dc76478457.json
+
+# 기타
+*.log 
