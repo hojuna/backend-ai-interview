@@ -55,7 +55,7 @@ logging.basicConfig(
 #     questions = res_questions.json()["questions"]
 #     assert len(questions) == 2
 #     # 6. Q&A 진행 (WebSocket)
-#     with client.websocket_connect(f"/sessions/{code}/chat") as ws:
+#     with client.websocket_connect(f"/sessions/{code}/ws/chat") as ws:
 #         for i in range(4):
 #             msg = ws.receive_json()
 #             if msg.get("event") == "면접 종료":
@@ -122,7 +122,7 @@ logging.basicConfig(
 #         )
 #         questions = res_questions.json()["questions"]
 #         assert len(questions) == n
-#         with client.websocket_connect(f"/sessions/{code}/chat") as ws:
+#         with client.websocket_connect(f"/sessions/{code}/ws/chat") as ws:
 #             for i in range(n):
 #                 msg = ws.receive_json()
 #                 if msg.get("event") == "면접 종료":
@@ -166,7 +166,7 @@ def test_eval_missing_fields():
     questions = res_questions.json()["questions"]
     # patch evaluate_answer to return abnormal result
     with patch("app.services.llm_service.evaluate_answer", return_value={}):
-        with client.websocket_connect(f"/sessions/{code}/chat") as ws:
+        with client.websocket_connect(f"/sessions/{code}/ws/chat") as ws:
             msg = ws.receive_json()
             ws.send_text("테스트 답변")
             end_msg = ws.receive_json()
