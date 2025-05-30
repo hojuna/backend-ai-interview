@@ -18,7 +18,7 @@ TRAFILATURA_CONFIG["DEFAULT"]["MAX_REDIRECTS"] = "0"
 TRAFILATURA_CONFIG["DEFAULT"]["MIN_OUTPUT_SIZE"] = "50"
 
 
-def fetch_blog_content(url: str) -> (str, str, str):
+def fetch_blog_content(url: str) -> (str, str, str): # type: ignore
     """
     주어진 블로그 글 URL에서 모바일 페이지(m.blog.naver.com)를 대상으로
     제목, 본문, 작성일을 추출합니다.
