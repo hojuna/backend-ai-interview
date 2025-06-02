@@ -8,3 +8,4 @@ pydantic
 litellm
 pytest
 httpx
+pydantic[email]
