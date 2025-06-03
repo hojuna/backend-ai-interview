@@ -146,6 +146,8 @@ def find_unique(nums):
 
 def generate_persona(
     rag_info: dict,
+    company: str,
+    position: str,
 ) -> dict:
     prompt = f"""
     아래 회사 정보와 채용 공고, 기술스택, 가치관을 참고해서
@@ -156,8 +158,19 @@ def generate_persona(
     기술스택: {rag_info.get('tech_stack', '')}
     가치관: {rag_info.get('hiring_values', '')}
 
+    ### 지원자가 입력한 회사 정보와 지원 직무 정보
+    회사 이름: {company}
+    채용 직무: {position}
+    위 정보를 반영하여 한국어로 department를 생성해줘.
+
+    persona_name은 그냥 랜덤으로 한국인 이름으로 생성해줘
+
     답변 json 형식:
-    {{"persona": "페르소나 요약"}}
+    {{
+        "persona": "페르소나 요약",
+        "department": "페르소나 부서(예시 네이버 모바일 개발팀)",
+        "persona_name": "페르소나 이름 (예시: 김철수)"
+    }}
     """.strip()
 
     persona = ask_llm(prompt)
