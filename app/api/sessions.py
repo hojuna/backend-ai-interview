@@ -151,6 +151,22 @@ def persona_api(code: str):
     db.collection("sessions").document(session_id).update({"persona": persona})
     return PersonaResponse(persona=persona)
 
+## 저장된 persona 가져오기
+@router.get("/sessions/{code}/persona", response_model=PersonaResponse)
+def get_persona(code: str):
+    session_id = firebase_crud.get_session_id_by_code(code)
+    if not session_id:
+        raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
+
+    db = firebase_crud.get_db()
+    doc = db.collection("sessions").document(session_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="세션이 존재하지 않습니다.")
+
+    data = doc.to_dict()
+    persona = data.get("persona", "")
+    return PersonaResponse(persona=persona)
+
 
 @router.post("/sessions/{code}/questions", response_model=GenerateQuestionsResponse)
 def questions_api(code: str, req: GenerateQuestionsRequest):
