@@ -74,6 +74,12 @@ def call_gemini_api(text_content, company_hint="", title_hint=""):
 6. "sample_interview_questions": "tech_stack"을 보고 한개 생성해줘.
 7. "company_overview": 회사, 팀 또는 해당 직무의 조직에 대한 간략한 소개.
 
+job_title은 아래 가능한 맞는 선택지에서 선택해줘
+Backend Engineer, Frontend Engineer, Full Stack Engineer, DevOps Engineer, Security Engineer, Data Engineer, AI Engineer, iOS Developer, Android Developer, Project Manager, Cloud Engineer, MLOps Engineer , other
+
+company_name은 아래 가능한 맞는 선택지에서 선택해줘
+Naver, Kakao, Line, Coupang, Baemin, Daangn, Toss, Liner, Scatterlab
+
 공고 텍스트 (매우 길 경우 일부 내용이 생략되었을 수 있음):
 \"\"\"
 {text_content[:30000]} 
