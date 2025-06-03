@@ -21,9 +21,14 @@ class QuestionSchema(BaseModel):
     type: str
 
 
+class CategoryScoreFeedback(BaseModel):
+    name: str
+    score: float
+    feedback: str
+
+
 class EvaluationSchema(BaseModel):
-    score: Optional[List[Any]] = None
-    feedback: Optional[str] = None
+    categories: List[CategoryScoreFeedback]
 
 
 class InteractionLogSchema(BaseModel):

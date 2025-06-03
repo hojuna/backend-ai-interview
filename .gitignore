@@ -9,13 +9,12 @@ __pycache__/
 .vscode/
 
 # 데이터/결과/임시 파일
-*.json
 *.html
 *.pdf
 
 # 임시 폴더
 temp/
-data/
+data_crawler/
 reports/
 
 # firebase 인증키 등 민감정보
