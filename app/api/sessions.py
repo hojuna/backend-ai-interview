@@ -54,7 +54,8 @@ class PersonaRequest(BaseModel):
 
 
 class PersonaResponse(BaseModel):
-    persona: str
+    persona_name: str
+    department: str
 
 
 class GenerateQuestionsRequest(BaseModel):
@@ -141,15 +142,24 @@ def persona_api(code: str):
         rag_info = rag_info.to_dict()
     else:
         rag_info = TEMP_RAG_DB
-    persona_dict = llm_service.generate_persona(rag_info)
+    persona_dict = llm_service.generate_persona(rag_info, company, position)
     persona = persona_dict.get("persona", "") if isinstance(persona_dict, dict) else ""
     # Firestore에 persona 저장
-
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
 
-    db.collection("sessions").document(session_id).update({"persona": persona})
-    return PersonaResponse(persona=persona)
+    db.collection("sessions").document(session_id).update(
+        {
+            "persona": persona,
+            "persona_name": persona_dict.get("persona_name", ""),
+            "department": persona_dict.get("department", ""),
+        }
+    )
+    return PersonaResponse(
+        persona_name=persona_dict.get("persona_name", ""),
+        department=persona_dict.get("department", ""),
+    )
+
 
 ## 저장된 persona 가져오기
 @router.get("/sessions/{code}/persona", response_model=PersonaResponse)
@@ -164,8 +174,12 @@ def get_persona(code: str):
         raise HTTPException(status_code=404, detail="세션이 존재하지 않습니다.")
 
     data = doc.to_dict()
-    persona = data.get("persona", "")
-    return PersonaResponse(persona=persona)
+    persona_name = data.get("persona_name", "")
+    department = data.get("department", "")
+    return PersonaResponse(
+        persona_name=persona_name,
+        department=department,
+    )
 
 
 @router.post("/sessions/{code}/questions", response_model=GenerateQuestionsResponse)
