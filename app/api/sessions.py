@@ -20,8 +20,16 @@ from app.models.schemas import (
     SessionJoinResponse,
     SessionProfilePayload,
 )
-from app.services import firebase_crud, llm_service
-from app.services.rag_temp_db import search_rag
+from app.services import firebase_crud, llm_service, rag
+
+TEMP_RAG_DB = {
+    "company_overview": "회사 개요",
+    "job_posting": "채용 공고",
+    "tech_stack": "기술스택",
+    "hiring_values": "가치관",
+    "sample_interview_questions": "샘플 질문",
+}
+
 
 router = APIRouter()
 
@@ -127,14 +135,12 @@ def persona_api(code: str):
     data = doc.to_dict()
     company = data.get("company")
     position = data.get("position")
-
-    # TODO: 사용자의 입력 정보를 통해서 rag_info 생성 로직 구현해야함
-    # 현재는 (naver, backend engineer), (kakao, frontend engineer) 두 가지 케이스만 있음
-    rag_info = search_rag(company, position)
-    if not rag_info:
-        raise HTTPException(
-            status_code=404, detail="RAG DB에서 회사/직군 정보를 찾을 수 없습니다."
-        )
+    rag_info_ref = db.collection("jobs").document(f"({company}, {position})")
+    rag_info = rag_info_ref.get()
+    if rag_info.exists:
+        rag_info = rag_info.to_dict()
+    else:
+        rag_info = TEMP_RAG_DB
     persona_dict = llm_service.generate_persona(rag_info)
     persona = persona_dict.get("persona", "") if isinstance(persona_dict, dict) else ""
     # Firestore에 persona 저장
@@ -162,7 +168,28 @@ def questions_api(code: str, req: GenerateQuestionsRequest):
             status_code=400,
             detail="세션에 페르소나가 없습니다. 먼저 페르소나를 생성하세요.",
         )
-    questions = llm_service.generate_questions(persona, req.num_questions)
+    user_info = {
+        "company": data.get("company", ""),
+        "position": data.get("position", ""),
+        "name": data.get("name", ""),
+        "age": data.get("age", ""),
+        "gender": data.get("gender", ""),
+        "self_intro": data.get("self_intro", ""),
+    }
+
+    company = data.get("company")
+    position = data.get("position")
+    rag_info_ref = db.collection("jobs").document(f"({company}, {position})")
+    rag_info = rag_info_ref.get()
+    if rag_info.exists:
+        rag_info = rag_info.to_dict()
+    else:
+        rag_info = TEMP_RAG_DB
+
+    keywords = rag.get_top_keywords_by_category(user_info)
+    questions = llm_service.generate_questions(
+        persona, keywords, user_info, rag_info, req.num_questions
+    )
     print(questions)
     if not isinstance(questions, list) or len(questions) == 0:
         raise HTTPException(
@@ -262,11 +289,18 @@ async def chat_ws(websocket: WebSocket, code: str):
             answer = await websocket.receive_text()
             # 평가
             evaluation = llm_service.evaluate_answer(questions[turn]["text"], answer)
+            print(evaluation)
             # dict가 아니면 빈 dict로 처리
             if not isinstance(evaluation, dict):
                 evaluation = {}
+            # categories에서 점수/피드백 추출
+            categories = evaluation.get("categories", [])
+            scores = [cat.get("score", 0) for cat in categories]
+            feedbacks = [cat.get("feedback", "") for cat in categories]
             # InteractionLog 기록 (평가 결과는 클라에 전송X)
-            evaluations = [EvaluationSchema(**evaluation)] if evaluation else []
+            evaluations = (
+                [EvaluationSchema(categories=categories)] if categories else []
+            )
             log = InteractionLogSchema(
                 turn=turn + 1,
                 question=questions[turn]["text"],
@@ -277,18 +311,11 @@ async def chat_ws(websocket: WebSocket, code: str):
             # 꼬리질문 판단
             followup_count = 0
             avg_score = None
-            if evaluations and hasattr(evaluations[0], "score"):
-                scores = evaluations[0].score
-                if scores is not None and isinstance(scores, list) and len(scores) > 0:
-                    try:
-                        avg_score = sum(
-                            float(s)
-                            for s in scores
-                            if isinstance(s, (int, float, str))
-                            and str(s).replace(".", "", 1).isdigit()
-                        ) / len(scores)
-                    except Exception:
-                        avg_score = None
+            if scores and len(scores) > 0:
+                try:
+                    avg_score = sum(float(s) for s in scores) / len(scores)
+                except Exception:
+                    avg_score = None
             need_followup = False
             if avg_score is not None and avg_score < 3:
                 need_followup = True
@@ -310,8 +337,12 @@ async def chat_ws(websocket: WebSocket, code: str):
                 followup_eval = llm_service.evaluate_answer(followup_q, followup_answer)
                 if not isinstance(followup_eval, dict):
                     followup_eval = {}
+                followup_categories = followup_eval.get("categories", [])
+                followup_scores = [cat.get("score", 0) for cat in followup_categories]
                 followup_evaluations = (
-                    [EvaluationSchema(**followup_eval)] if followup_eval else []
+                    [EvaluationSchema(categories=followup_categories)]
+                    if followup_categories
+                    else []
                 )
                 log = InteractionLogSchema(
                     turn=turn + 1,
@@ -328,22 +359,13 @@ async def chat_ws(websocket: WebSocket, code: str):
                 # 추가 꼬리질문 필요 여부 재판단
                 need_followup = False
                 avg_score = None
-                if followup_evaluations and hasattr(followup_evaluations[0], "score"):
-                    scores = followup_evaluations[0].score
-                    if (
-                        scores is not None
-                        and isinstance(scores, list)
-                        and len(scores) > 0
-                    ):
-                        try:
-                            avg_score = sum(
-                                float(s)
-                                for s in scores
-                                if isinstance(s, (int, float, str))
-                                and str(s).replace(".", "", 1).isdigit()
-                            ) / len(scores)
-                        except Exception:
-                            avg_score = None
+                if followup_scores and len(followup_scores) > 0:
+                    try:
+                        avg_score = sum(float(s) for s in followup_scores) / len(
+                            followup_scores
+                        )
+                    except Exception:
+                        avg_score = None
                 if avg_score is not None and avg_score < 3:
                     need_followup = True
             turn += 1
