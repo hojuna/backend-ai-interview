@@ -8,3 +8,5 @@ pydantic
 litellm
 pytest
 httpx
+selenium
+websockets
