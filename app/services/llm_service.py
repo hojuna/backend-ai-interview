@@ -106,7 +106,7 @@ def find_unique(nums):
             return i
 ```
 - 예시 피드백: 4/5 – 비효율성은 잘 짚었으나 개선 코드 작성에서 변수 명이 불명확함.
-- 코드 구현력 평가는 질문에 따라 평가가 어려울 수 있음 이 경우에는 평가점수를 3점으로 처리 후 피드백에 코드 구현력 평가가 어렵다고 작성해줘
+- 코드 구현력 평가는 질문에 따라 평가가 어려울 수 있음 이 경우에는 평가점수를 0점으로 처리 후 피드백에 코드 구현력 평가가 어렵다고 작성해줘
 
 5. 의사소통 능력 / 설명의 명확성 (Communication Skills) [10%]
 - 평가 포인트: 설명이 논리적이고 명확한가? 용어를 청자의 수준에 맞게 풀어내는가? 불필요하게 장황하지 않은가?
@@ -120,6 +120,8 @@ def find_unique(nums):
 
 질문: {question}
 답변: {answer}
+
+## 주의 사항 : 코드 구현력 평가가 어려울 경우 평가 점수가 0점임으로 평균 점수에 예외하고 계산을 진행합니다
 
 아래와 같은 JSON 형식으로 모든 카테고리에 대한 평가를 답변해 주세요.
 {{
@@ -291,13 +293,25 @@ def final_eval(logs: list) -> dict:
                 if cat_item is not None:
                     score = float(cat_item.get("score", 0))
                     feedback = cat_item.get("feedback", "")
+                    # 코드 구현력 0점(평가 불가)은 평균 계산에서 제외
+                    if cat == "코드 구현력" and score == 0:
+                        category_feedbacks[cat].append(feedback)
+                        scores.append(score)  # 질문별 상세 점수에는 남김
+                        feedbacks.append(feedback)
+                        continue
                     category_scores[cat].append(score)
                     category_feedbacks[cat].append(feedback)
                     scores.append(score)
                     feedbacks.append(feedback)
             except Exception:
                 pass
-        total_scores.extend(scores)
+        # 전체 평균 계산에서 코드 구현력 0점은 제외
+        filtered_scores = [
+            s
+            for idx, s in enumerate(scores)
+            if not (categories[idx] == "코드 구현력" and s == 0)
+        ]
+        total_scores.extend(filtered_scores)
         questions.append(
             {
                 "question": log.get("question"),
@@ -322,6 +336,8 @@ def final_eval(logs: list) -> dict:
     summary_prompt = f"""
 당신은 최고의 면접 평가 전문가입니다. 면접 평가 전문가로서 면접 평가 기준과 예시를 참고해서 면접 평가를 작성해줘.
 너무 평가 기준과 이전의 평가 기록에 너무 얽매이지 말고 면접자의 답변을 전체적으로 참고해서 평가를 작성해줘.
+
+## 주의 사항 : 모든 질문에서 코드 구현력 평가가 어려울 경우는 제외하고(고려하지 않고) 총평을 진행한다.
 
 아래는 신입 개발자 모의면접 세션의 질문/응답/평가 기록입니다.
 FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 6개 항목에 대해 종합적으로 평가해 주세요.
