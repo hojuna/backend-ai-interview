@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def ask_llm(prompt: str, model: str = "gemini/gemini-2.0-flash") -> str:
+def ask_llm(prompt: str, model: str = "gemini/gemini-2.5-flash") -> str:
     max_retries = 2
     last_content = ""
     for _ in range(max_retries + 1):
@@ -422,7 +422,7 @@ def answer_question_with_llm(question: str) -> str:
     )
 
     response = litellm.completion(
-        model="gemini/gemini-2.0-flash",
+        model="gemini/gemini-2.5-flash",
         messages=[{"role": "user", "content": prompt}],
         stream=False,
     )
