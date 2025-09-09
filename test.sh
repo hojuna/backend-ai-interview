@@ -3,3 +3,6 @@
 
 ## 테스트 실행
 PYTHONPATH=. pytest --log-file=test.log --log-file-level=INFO app/tests/test_sessions.py
+
+
+## commit test
