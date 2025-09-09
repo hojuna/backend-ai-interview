@@ -11,3 +11,5 @@ httpx
 pydantic[email]
 selenium
 websockets
+SpeechRecognition
+google-genai
