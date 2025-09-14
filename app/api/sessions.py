@@ -13,9 +13,9 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from google import genai
 from google.genai import types
+from pydub import AudioSegment
 import io
 import speech_recognition as sr
-from pydub import AudioSegment
 import os
 import re
 import uuid
@@ -522,19 +522,37 @@ async def sst_ws(websocket: WebSocket, code: str):
         finally:
             await websocket.send_json({"event": "question_audio_end"})
 
-    def transcribe_mp3(mp3_bytes: bytes) -> str:
+    async def stream_wav_file(file_path: str, sample_rate: int = 24000, channels: int = 1):
         """
-        MP3 바이트를 WAV(PCM, mono, 16kHz)로 변환 후 Google Web Speech API(ko-KR)로 전사.
+        로컬 WAV/오디오 파일을 읽어 PCM s16le로 변환하여 바이너리로 스트리밍.
+        클라이언트는 'question_audio_start'/'question_audio_end' 이벤트를 재사용해 재생한다.
+        """
+        await websocket.send_json({
+            "event": "question_audio_start",
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "format": "pcm_s16le"
+        })
+        try:
+            seg = AudioSegment.from_file(file_path)
+            seg = seg.set_channels(channels).set_frame_rate(
+                sample_rate).set_sample_width(2)
+            pcm_bytes = seg.raw_data
+            if pcm_bytes:
+                await websocket.send_bytes(pcm_bytes)
+            else:
+                await websocket.send_json({"error": "재시도 안내 오디오가 비어있습니다."})
+        except Exception:
+            await websocket.send_json({"error": "재시도 안내 오디오 전송 실패"})
+        finally:
+            await websocket.send_json({"event": "question_audio_end"})
+
+    def transcribe_wav(wav_bytes: bytes) -> str:
+        """
+        클라이언트가 보낸 WAV(PCM s16le, mono, 16kHz 권장)를 그대로 Google Web Speech API(ko-KR)로 전사.
         """
         try:
-            audio_seg = AudioSegment.from_file(
-                io.BytesIO(mp3_bytes), format="mp3")
-            audio_seg = audio_seg.set_channels(
-                1).set_frame_rate(16000).set_sample_width(2)
-            wav_buf = io.BytesIO()
-            audio_seg.export(wav_buf, format="wav")
-            wav_buf.seek(0)
-
+            wav_buf = io.BytesIO(wav_bytes)
             recognizer = sr.Recognizer()
             with sr.AudioFile(wav_buf) as source:
                 audio_data = recognizer.record(source)
@@ -550,27 +568,39 @@ async def sst_ws(websocket: WebSocket, code: str):
 
     turn = 0
     try:
+        await stream_tts("안녕하세요. 지금부터 면접을 시작하겠습니다. 질문을 들으신 뒤, 답변을 녹음해 전송해 주세요.")
         while turn < len(questions):
             question_text = questions[turn]["text"]
             await stream_tts(question_text)
 
-            recv = await websocket.receive()
+            # STT 재시도 루프: 인식 실패 시 같은 질문에 대해 재녹음을 요청
+            max_retries = 2
+            attempt = 0
+            answer_text = ""
+            while attempt <= max_retries and not answer_text:
+                recv = await websocket.receive()
 
-            mp3_bytes = None
-            if recv.get("type") == "websocket.disconnect":
-                break
-            if "bytes" in recv and recv["bytes"] is not None:
-                mp3_bytes = recv["bytes"]
-            elif "text" in recv and recv["text"]:
-                # 텍스트 제어 메시지는 무시
-                pass
+                wav_bytes = None
+                if recv.get("type") == "websocket.disconnect":
+                    break
+                if "bytes" in recv and recv["bytes"] is not None:
+                    wav_bytes = recv["bytes"]
+                elif "text" in recv and recv["text"]:
+                    # 텍스트 제어 메시지는 무시
+                    pass
 
-            if not mp3_bytes:
-                await websocket.send_json({"error": "오디오 응답이 필요합니다."})
-                await websocket.close(code=4004)
-                return
+                if not wav_bytes:
+                    await websocket.send_json({"error": "오디오 응답이 필요합니다."})
+                    await websocket.close(code=4004)
+                    return
 
-            answer_text = transcribe_mp3(mp3_bytes)
+                answer_text = transcribe_wav(wav_bytes)
+                if not answer_text:
+                    attempt += 1
+                    if attempt <= max_retries:
+                        retry_audio_path = os.path.abspath(os.path.join(
+                            os.path.dirname(__file__), "../../retry_inform.wav"))
+                        await stream_wav_file(retry_audio_path, sample_rate=SAMPLE_RATE, channels=CHANNELS)
             evaluation = llm_service.evaluate_answer(
                 question_text, answer_text)
             if not isinstance(evaluation, dict):
@@ -611,18 +641,30 @@ async def sst_ws(websocket: WebSocket, code: str):
                 followup_q = followup_result.get("question", "")
                 await stream_tts(followup_q)
 
-                recv_fu = await websocket.receive()
-                fu_mp3 = None
-                if recv_fu.get("type") == "websocket.disconnect":
-                    need_followup = False
-                    break
-                if "bytes" in recv_fu and recv_fu["bytes"] is not None:
-                    fu_mp3 = recv_fu["bytes"]
-                if not fu_mp3:
-                    need_followup = False
-                    break
+                # Follow-up STT 재시도 루프
+                max_retries_fu = 2
+                attempt_fu = 0
+                followup_answer = ""
+                while attempt_fu <= max_retries_fu and not followup_answer:
+                    recv_fu = await websocket.receive()
+                    fu_wav = None
+                    if recv_fu.get("type") == "websocket.disconnect":
+                        need_followup = False
+                        break
+                    if "bytes" in recv_fu and recv_fu["bytes"] is not None:
+                        fu_wav = recv_fu["bytes"]
+                    if not fu_wav:
+                        need_followup = False
+                        break
 
-                followup_answer = transcribe_mp3(fu_mp3)
+                    followup_answer = transcribe_wav(fu_wav)
+                    if not followup_answer:
+                        attempt_fu += 1
+                        if attempt_fu <= max_retries_fu:
+                            retry_audio_path = os.path.abspath(os.path.join(
+                                os.path.dirname(__file__), "../../retry_inform.wav"))
+                            await stream_wav_file(retry_audio_path, sample_rate=SAMPLE_RATE, channels=CHANNELS)
+
                 followup_eval = llm_service.evaluate_answer(
                     followup_q, followup_answer)
                 if not isinstance(followup_eval, dict):
@@ -660,6 +702,8 @@ async def sst_ws(websocket: WebSocket, code: str):
             turn += 1
 
         firebase_crud.save_chat_end(session_id)
+        # 종료 인사
+        await stream_tts("수고하셨습니다. 면접이 종료되었습니다. 좋은 결과 있길 바랍니다.")
         await websocket.send_json({"event": "면접 종료", "message": "모든 질문이 소진되었습니다."})
         await websocket.close()
     except WebSocketDisconnect:
