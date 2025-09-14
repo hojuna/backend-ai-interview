@@ -10,7 +10,6 @@ __pycache__/
 .vscode/
 
 # 데이터/결과/임시 파일
-*.html
 *.pdf
 
 # 임시 폴더

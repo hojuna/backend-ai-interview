@@ -19,7 +19,8 @@ def ask_llm(prompt: str, model: str = "gemini/gemini-2.5-flash") -> str:
             stream=False,
             response_format={"type": "json_object"},
         )
-        content = str(response.choices[0].message.content) if response.choices else ""
+        content = str(
+            response.choices[0].message.content) if response.choices else ""
         try:
             test = json.loads(content)
             if isinstance(test, dict):
@@ -96,24 +97,12 @@ FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 6개 항목에 대�
 - 챗봇 질문 예시: "Stack은 잘 알고 계신 것 같은데, 재귀 함수 호출 흐름과 연결 지어 설명해보실 수 있나요?"
 - 예시 피드백: 3/5 – Stack 자체는 이해했으나 재귀 흐름으로의 확장이 부족함.
 
-4. 코드 구현력 / 흐름 이해 (Coding Skills) [20%]
-- 평가 포인트: 문법 실수 없이 동작 가능한 코드 작성, 함수 분리, 변수명 등 코드 가독성, 코드를 읽고 설명하는 능력
-- 챗봇 질문 예시: "아래 코드를 개선해보세요. 어떤 점이 비효율적일까요?"
-```python
-def find_unique(nums):
-    for i in nums:
-        if nums.count(i) == 1:
-            return i
-```
-- 예시 피드백: 4/5 – 비효율성은 잘 짚었으나 개선 코드 작성에서 변수 명이 불명확함.
-- 코드 구현력 평가는 질문에 따라 평가가 어려울 수 있음 이 경우에는 평가점수를 0점으로 처리 후 피드백에 코드 구현력 평가가 어렵다고 작성해줘
-
-5. 의사소통 능력 / 설명의 명확성 (Communication Skills) [10%]
+4. 의사소통 능력 / 설명의 명확성 (Communication Skills) [10%]
 - 평가 포인트: 설명이 논리적이고 명확한가? 용어를 청자의 수준에 맞게 풀어내는가? 불필요하게 장황하지 않은가?
 - 챗봇 질문 예시: "Stack과 Queue의 차이를 초보자에게 설명해본다면 어떻게 말할까요?"
 - 예시 피드백: 3/5 – 개념 전달은 되었으나 예시 부족하고 길게 설명함.
 
-6. 태도 및 자기 인식 (Attitude) [10%]
+5. 태도 및 자기 인식 (Attitude) [10%]
 - 평가 포인트: 모르는 건 인정하는가? 피드백 수용 태도는 어떤가? 학습 의지나 성장 마인드가 있는가?
 - 챗봇 질문 예시: "이 문제를 해결하지 못했다면, 다음에 어떻게 접근해보실 건가요?"
 - 예시 피드백: 5/5 – 모르는 부분은 솔직히 인정했고, 학습 계획까지 언급함.
@@ -121,15 +110,12 @@ def find_unique(nums):
 질문: {question}
 답변: {answer}
 
-## 주의 사항 : 코드 구현력 평가가 어려울 경우 평가 점수가 0점임으로 평균 점수에 예외하고 계산을 진행합니다
-
 아래와 같은 JSON 형식으로 모든 카테고리에 대한 평가를 답변해 주세요.
 {{
   "categories": [
     {{"name": "기술 이해도", "score": 4, "feedback": "해시 구조 개념은 잘 설명했으나, 충돌 해결 방식까지는 연결하지 못함."}},
     {{"name": "문제 해결력", "score": 3, "feedback": "정답에는 도달했지만 시간 복잡도 최적화에 대한 고려는 부족함."}},
     {{"name": "기초 지식 응용력", "score": 3, "feedback": "Stack 자체는 이해했으나 재귀 흐름으로의 확장이 부족함."}},
-    {{"name": "코드 구현력", "score": 4, "feedback": "비효율성은 잘 짚었으나 개선 코드 작성에서 변수 명이 불명확함."}},
     {{"name": "의사소통 능력", "score": 3, "feedback": "개념 전달은 되었으나 예시 부족하고 길게 설명함."}},
     {{"name": "태도 및 자기 인식", "score": 5, "feedback": "모르는 부분은 솔직히 인정했고, 학습 계획까지 언급함."}},
   ],
@@ -268,7 +254,6 @@ def final_eval(logs: list) -> dict:
         "기술 이해도",
         "문제 해결력",
         "기초 지식 응용력",
-        "코드 구현력",
         "의사소통 능력",
         "태도 및 자기 인식",
     ]
@@ -290,7 +275,8 @@ def final_eval(logs: list) -> dict:
         feedbacks = []
         for i, cat in enumerate(categories):
             try:
-                cat_item = next((c for c in cats if c.get("name") == cat), None)
+                cat_item = next(
+                    (c for c in cats if c.get("name") == cat), None)
                 if cat_item is not None:
                     score = float(cat_item.get("score", 0))
                     feedback = cat_item.get("feedback", "")
@@ -322,7 +308,8 @@ def final_eval(logs: list) -> dict:
             }
         )
     # 평균 계산
-    avg_total = round(sum(total_scores) / len(total_scores), 2) if total_scores else 0.0
+    avg_total = round(sum(total_scores) / len(total_scores),
+                      2) if total_scores else 0.0
     avg_category = {
         cat: round(sum(vals) / len(vals), 2) if vals else 0.0
         for cat, vals in category_scores.items()
@@ -337,8 +324,6 @@ def final_eval(logs: list) -> dict:
     summary_prompt = f"""
 당신은 최고의 면접 평가 전문가입니다. 면접 평가 전문가로서 면접 평가 기준과 예시를 참고해서 면접 평가를 작성해줘.
 너무 평가 기준과 이전의 평가 기록에 너무 얽매이지 말고 면접자의 답변을 전체적으로 참고해서 평가를 작성해줘.
-
-## 주의 사항 : 모든 질문에서 코드 구현력 평가가 어려울 경우는 제외하고(고려하지 않고) 총평을 진행한다.
 
 아래는 신입 개발자 모의면접 세션의 질문/응답/평가 기록입니다.
 FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 6개 항목에 대해 종합적으로 평가해 주세요.
@@ -363,24 +348,12 @@ FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 6개 항목에 대�
 - 챗봇 질문 예시: "Stack은 잘 알고 계신 것 같은데, 재귀 함수 호출 흐름과 연결 지어 설명해보실 수 있나요?"
 - 예시 피드백: 3/5 – Stack 자체는 이해했으나 재귀 흐름으로의 확장이 부족함.
 
-4. 코드 구현력 / 흐름 이해 (Coding Skills) [20%]
-- 평가 포인트: 문법 실수 없이 동작 가능한 코드 작성, 함수 분리, 변수명 등 코드 가독성, 코드를 읽고 설명하는 능력
-- 챗봇 질문 예시: "아래 코드를 개선해보세요. 어떤 점이 비효율적일까요?"
-```python
-def find_unique(nums):
-    for i in nums:
-        if nums.count(i) == 1:
-            return i
-```
-- 예시 피드백: 4/5 – 비효율성은 잘 짚었으나 개선 코드 작성에서 변수 명이 불명확함.
-- 코드 구현력 평가는 질문에 따라 평가가 어려울 수 있음 이 경우에는 평가점수를 0점으로 처리 후 피드백에 코드 구현력 평가가 어렵다고 작성해줘
-
-5. 의사소통 능력 / 설명의 명확성 (Communication Skills) [10%]
+4. 의사소통 능력 / 설명의 명확성 (Communication Skills) [10%]
 - 평가 포인트: 설명이 논리적이고 명확한가? 용어를 청자의 수준에 맞게 풀어내는가? 불필요하게 장황하지 않은가?
 - 챗봇 질문 예시: "Stack과 Queue의 차이를 초보자에게 설명해본다면 어떻게 말할까요?"
 - 예시 피드백: 3/5 – 개념 전달은 되었으나 예시 부족하고 길게 설명함.
 
-6. 태도 및 자기 인식 (Attitude) [10%]
+5. 태도 및 자기 인식 (Attitude) [10%]
 - 평가 포인트: 모르는 건 인정하는가? 피드백 수용 태도는 어떤가? 학습 의지나 성장 마인드가 있는가?
 - 챗봇 질문 예시: "이 문제를 해결하지 못했다면, 다음에 어떻게 접근해보실 건가요?"
 - 예시 피드백: 5/5 – 모르는 부분은 솔직히 인정했고, 학습 계획까지 언급함.
