@@ -568,7 +568,7 @@ async def sst_ws(websocket: WebSocket, code: str):
 
     turn = 0
     try:
-        await stream_tts("안녕하세요. 지금부터 면접을 시작하겠습니다. 질문을 들으신 뒤, 답변을 녹음해 전송해 주세요.")
+        await stream_tts("안녕하세요. 지금부터 면접을 시작하겠습니다. 질문을 들으신 뒤, 답변해주세요.")
         while turn < len(questions):
             question_text = questions[turn]["text"]
             await stream_tts(question_text)
