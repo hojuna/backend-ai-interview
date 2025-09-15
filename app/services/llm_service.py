@@ -18,6 +18,7 @@ def ask_llm(prompt: str, model: str = "gemini/gemini-2.5-flash") -> str:
             messages=[{"role": "user", "content": prompt}],
             stream=False,
             response_format={"type": "json_object"},
+            reasoning_effort="disable",
         )
         content = str(
             response.choices[0].message.content) if response.choices else ""
@@ -70,14 +71,14 @@ def generate_questions(
 def evaluate_answer(question: str, answer: str) -> Dict:
     prompt = f"""
 아래는 신입 개발자 면접 질문과 지원자의 답변입니다.
-FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 6개 항목에 대해 평가해 주세요.
+FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 5개 항목에 대해 평가해 주세요.
 
 각 항목별로 1~5점 점수와 구체적인 피드백을 JSON으로 반환해 주세요.
 각 항목의 평가 기준과 예시를 반드시 참고해서 평가해 주세요.
 
 최종적으로 각 항목별 점수에 아래 가중치를 곱해 100점 만점의 총점을 산출해 주세요.
-- 1~4번 항목: 각 20%
-- 5, 6번 항목: 각 10%
+- 1~3번 항목: 각 20%
+- 4, 5번 항목: 각 10%
 
 ### 평가 항목, 기준, 예시
 
@@ -151,7 +152,7 @@ def generate_persona(
     채용 직무: {position}
     위 정보를 반영하여 한국어로 department를 생성해줘.
 
-    persona_name은 그냥 랜덤으로 한국인 이름으로 생성해줘
+    persona_name은 그냥 랜덤으로 남성 한국인 이름으로 생성해줘
 
     답변 json 형식:
     {{
@@ -269,7 +270,7 @@ def final_eval(logs: list) -> dict:
         if not eval_item:
             continue
         cats = eval_item.get("categories", [])
-        if not cats or len(cats) != 6:
+        if not cats or len(cats) != 5:
             continue
         scores = []
         feedbacks = []
@@ -326,11 +327,11 @@ def final_eval(logs: list) -> dict:
 너무 평가 기준과 이전의 평가 기록에 너무 얽매이지 말고 면접자의 답변을 전체적으로 참고해서 평가를 작성해줘.
 
 아래는 신입 개발자 모의면접 세션의 질문/응답/평가 기록입니다.
-FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 6개 항목에 대해 종합적으로 평가해 주세요.
+FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 5개 항목에 대해 종합적으로 평가해 주세요.
 
 각 항목별 평가 기준과 예시를 반드시 참고해서 전체 면접의 강점, 개선점, 최종 총평을 10줄 이내로 작성해 주세요.
 
-최종 총평에는 아래 6개 항목의 기준과 예시를 반드시 참고해 주세요.
+최종 총평에는 아래 5개 항목의 기준과 예시를 반드시 참고해 주세요.
 
 1. 기술 이해도 (Technical Understanding) [20%]
 - 평가 포인트: 개념을 정확히 알고 있는가? 핵심 용어를 올바르게 사용하는가?
@@ -398,5 +399,6 @@ def answer_question_with_llm(question: str) -> str:
         model="gemini/gemini-2.5-flash",
         messages=[{"role": "user", "content": prompt}],
         stream=False,
+        reasoning_effort="disable",
     )
     return response.choices[0].message.content
