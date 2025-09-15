@@ -14,6 +14,9 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from google import genai
 from google.genai import types
 from pydub import AudioSegment
+from pydub.effects import speedup
+import asyncio
+from gtts import gTTS
 import io
 import speech_recognition as sr
 import os
@@ -23,7 +26,7 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 TEMP_RAG_DB = {
@@ -448,6 +451,7 @@ def final_eval_session(code: str):
         db.collection("sessions").document(
             session_id).collection("interactions")
     )
+    print(interactions_ref)
     interactions = list(interactions_ref.stream())
     logs = [x.to_dict() for x in interactions]
     result = llm_service.final_eval(logs)
@@ -482,7 +486,46 @@ async def sst_ws(websocket: WebSocket, code: str):
     SAMPLE_RATE = 24000
     CHANNELS = 1
 
-    async def stream_tts(text: str, voice_name: str = "Sadaltager"):
+    # async def stream_tts(text: str, voice_name: str = "Sadaltager"):
+    #     await websocket.send_json({
+    #         "event": "question_audio_start",
+    #         "sample_rate": SAMPLE_RATE,
+    #         "channels": CHANNELS,
+    #         "format": "pcm_s16le"
+    #     })
+    #     try:
+    #         response = client.models.generate_content(
+    #             model="gemini-2.5-flash-preview-tts",
+    #             contents=text,
+    #             config=types.GenerateContentConfig(
+    #                 response_modalities=["AUDIO"],
+    #                 speech_config=types.SpeechConfig(
+    #                     voice_config=types.VoiceConfig(
+    #                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
+    #                             voice_name=voice_name,
+    #                         )
+    #                     )
+    #                 ),
+    #             ),
+    #         )
+    #         # 전체 오디오 바이트를 한 번에 전송
+    #         sent_any = False
+    #         candidates = getattr(response, "candidates", [])
+    #         if candidates:
+    #             content = getattr(candidates[0], "content", None)
+    #             if content:
+    #                 for part in getattr(content, "parts", []):
+    #                     inline = getattr(part, "inline_data", None)
+    #                     if inline and getattr(inline, "data", None):
+    #                         await websocket.send_bytes(inline.data)
+    #                         sent_any = True
+    #         if not sent_any:
+    #             await websocket.send_json({"error": "TTS 응답이 비어있습니다."})
+    #     except Exception:
+    #         await websocket.send_json({"error": "TTS 생성에 실패했습니다."})
+    #     finally:
+    #         await websocket.send_json({"event": "question_audio_end"})
+    async def stream_tts(text: str, voice_name: str = "Sadaltager"):  # voice_name은 시그니처 유지용
         await websocket.send_json({
             "event": "question_audio_start",
             "sample_rate": SAMPLE_RATE,
@@ -490,32 +533,26 @@ async def sst_ws(websocket: WebSocket, code: str):
             "format": "pcm_s16le"
         })
         try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash-preview-tts",
-                contents=text,
-                config=types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=voice_name,
-                            )
-                        )
-                    ),
-                ),
-            )
-            # 전체 오디오 바이트를 한 번에 전송
-            sent_any = False
-            candidates = getattr(response, "candidates", [])
-            if candidates:
-                content = getattr(candidates[0], "content", None)
-                if content:
-                    for part in getattr(content, "parts", []):
-                        inline = getattr(part, "inline_data", None)
-                        if inline and getattr(inline, "data", None):
-                            await websocket.send_bytes(inline.data)
-                            sent_any = True
-            if not sent_any:
+            mp3_buf = io.BytesIO()
+            tts = gTTS(text=text, lang="ko")
+            tts.write_to_fp(mp3_buf)
+            mp3_buf.seek(0)
+
+            seg = AudioSegment.from_file(mp3_buf, format="mp3")
+
+            try:
+                seg = speedup(seg, playback_speed=1.3)
+            except Exception:
+                # speedup 실패 시 프레임레이트 트릭으로 대체 가속
+                seg = seg._spawn(seg.raw_data, overrides={
+                                 "frame_rate": int(seg.frame_rate * 1.3)})
+
+            seg = seg.set_channels(CHANNELS).set_frame_rate(
+                SAMPLE_RATE).set_sample_width(2)
+            pcm_bytes = seg.raw_data
+            if pcm_bytes:
+                await websocket.send_bytes(pcm_bytes)
+            else:
                 await websocket.send_json({"error": "TTS 응답이 비어있습니다."})
         except Exception:
             await websocket.send_json({"error": "TTS 생성에 실패했습니다."})
@@ -569,6 +606,7 @@ async def sst_ws(websocket: WebSocket, code: str):
     turn = 0
     try:
         await stream_tts("안녕하세요. 지금부터 면접을 시작하겠습니다. 질문을 들으신 뒤, 답변해주세요.")
+        await asyncio.sleep(1)
         while turn < len(questions):
             question_text = questions[turn]["text"]
             await stream_tts(question_text)
@@ -586,7 +624,6 @@ async def sst_ws(websocket: WebSocket, code: str):
                 if "bytes" in recv and recv["bytes"] is not None:
                     wav_bytes = recv["bytes"]
                 elif "text" in recv and recv["text"]:
-                    # 텍스트 제어 메시지는 무시
                     pass
 
                 if not wav_bytes:
