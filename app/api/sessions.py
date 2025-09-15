@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+SPEED_UP_RATE = 1.3
 
 TEMP_RAG_DB = {
     "company_overview": "회사 개요",
@@ -541,11 +542,11 @@ async def sst_ws(websocket: WebSocket, code: str):
             seg = AudioSegment.from_file(mp3_buf, format="mp3")
 
             try:
-                seg = speedup(seg, playback_speed=1.3)
+                seg = speedup(seg, playback_speed=SPEED_UP_RATE)
             except Exception:
                 # speedup 실패 시 프레임레이트 트릭으로 대체 가속
                 seg = seg._spawn(seg.raw_data, overrides={
-                                 "frame_rate": int(seg.frame_rate * 1.3)})
+                    "frame_rate": int(seg.frame_rate * SPEED_UP_RATE)})
 
             seg = seg.set_channels(CHANNELS).set_frame_rate(
                 SAMPLE_RATE).set_sample_width(2)
