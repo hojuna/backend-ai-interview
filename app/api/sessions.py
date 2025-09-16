@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-SPEED_UP_RATE = 1.0
+SPEED_UP_RATE = 1.3
 
 TEMP_RAG_DB = {
     "company_overview": "회사 개요",
@@ -612,7 +612,7 @@ async def sst_ws(websocket: WebSocket, code: str):
     turn = 0
     try:
         await stream_tts("안녕하세요. 지금부터 면접을 시작하겠습니다. 질문을 들으신 뒤, 답변해주세요.")
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
         while turn < len(questions):
             question_text = questions[turn]["text"]
             await stream_tts(question_text)
