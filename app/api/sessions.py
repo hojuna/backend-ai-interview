@@ -16,7 +16,7 @@ from google.genai import types
 from pydub import AudioSegment
 from pydub.effects import speedup
 import asyncio
-from gtts import gTTS
+import edge_tts
 import io
 import speech_recognition as sr
 import os
@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-SPEED_UP_RATE = 1.3
+SPEED_UP_RATE = 1.0
 
 TEMP_RAG_DB = {
     "company_overview": "회사 개요",
@@ -535,10 +535,15 @@ async def sst_ws(websocket: WebSocket, code: str):
         })
         try:
             mp3_buf = io.BytesIO()
-            tts = gTTS(text=text, lang="ko")
-            tts.write_to_fp(mp3_buf)
+            # edge-tts를 통해 MP3 바이트를 생성
+            communicate = edge_tts.Communicate(
+                text, "ko-KR-HyunsuMultilingualNeural")
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio" and chunk.get("data"):
+                    mp3_buf.write(chunk["data"])
             mp3_buf.seek(0)
 
+            # MP3 -> PCM(SAMPLE_RATE, mono, s16le) 변환 및 배속 처리(현재 1.0x)
             seg = AudioSegment.from_file(mp3_buf, format="mp3")
 
             try:
@@ -607,7 +612,7 @@ async def sst_ws(websocket: WebSocket, code: str):
     turn = 0
     try:
         await stream_tts("안녕하세요. 지금부터 면접을 시작하겠습니다. 질문을 들으신 뒤, 답변해주세요.")
-        await asyncio.sleep(1)
+        await asyncio.sleep(3)
         while turn < len(questions):
             question_text = questions[turn]["text"]
             await stream_tts(question_text)
