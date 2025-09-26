@@ -13,7 +13,7 @@ def get_db():
     return get_firestore_client()
 
 # --- 비밀번호 해싱 ---
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)

@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-SPEED_UP_RATE = 1.3
+SPEED_UP_RATE = 1.2
 
 TEMP_RAG_DB = {
     "company_overview": "회사 개요",
@@ -487,6 +487,24 @@ async def sst_ws(websocket: WebSocket, code: str):
     SAMPLE_RATE = 24000
     CHANNELS = 1
 
+    async def ws_safe_send_json(payload) -> bool:
+        try:
+            await websocket.send_json(payload)
+            return True
+        except (RuntimeError, WebSocketDisconnect):
+            return False
+        except Exception:
+            return False
+
+    async def ws_safe_send_bytes(data: bytes) -> bool:
+        try:
+            await websocket.send_bytes(data)
+            return True
+        except (RuntimeError, WebSocketDisconnect):
+            return False
+        except Exception:
+            return False
+
     # async def stream_tts(text: str, voice_name: str = "Sadaltager"):
     #     await websocket.send_json({
     #         "event": "question_audio_start",
@@ -527,7 +545,7 @@ async def sst_ws(websocket: WebSocket, code: str):
     #     finally:
     #         await websocket.send_json({"event": "question_audio_end"})
     async def stream_tts(text: str, voice_name: str = "Sadaltager"):  # voice_name은 시그니처 유지용
-        await websocket.send_json({
+        await ws_safe_send_json({
             "event": "question_audio_start",
             "sample_rate": SAMPLE_RATE,
             "channels": CHANNELS,
@@ -557,20 +575,20 @@ async def sst_ws(websocket: WebSocket, code: str):
                 SAMPLE_RATE).set_sample_width(2)
             pcm_bytes = seg.raw_data
             if pcm_bytes:
-                await websocket.send_bytes(pcm_bytes)
+                await ws_safe_send_bytes(pcm_bytes)
             else:
-                await websocket.send_json({"error": "TTS 응답이 비어있습니다."})
+                await ws_safe_send_json({"error": "TTS 응답이 비어있습니다."})
         except Exception:
-            await websocket.send_json({"error": "TTS 생성에 실패했습니다."})
+            await ws_safe_send_json({"error": "TTS 생성에 실패했습니다."})
         finally:
-            await websocket.send_json({"event": "question_audio_end"})
+            await ws_safe_send_json({"event": "question_audio_end"})
 
     async def stream_wav_file(file_path: str, sample_rate: int = 24000, channels: int = 1):
         """
         로컬 WAV/오디오 파일을 읽어 PCM s16le로 변환하여 바이너리로 스트리밍.
         클라이언트는 'question_audio_start'/'question_audio_end' 이벤트를 재사용해 재생한다.
         """
-        await websocket.send_json({
+        await ws_safe_send_json({
             "event": "question_audio_start",
             "sample_rate": sample_rate,
             "channels": channels,
@@ -582,13 +600,13 @@ async def sst_ws(websocket: WebSocket, code: str):
                 sample_rate).set_sample_width(2)
             pcm_bytes = seg.raw_data
             if pcm_bytes:
-                await websocket.send_bytes(pcm_bytes)
+                await ws_safe_send_bytes(pcm_bytes)
             else:
-                await websocket.send_json({"error": "재시도 안내 오디오가 비어있습니다."})
+                await ws_safe_send_json({"error": "재시도 안내 오디오가 비어있습니다."})
         except Exception:
-            await websocket.send_json({"error": "재시도 안내 오디오 전송 실패"})
+            await ws_safe_send_json({"error": "재시도 안내 오디오 전송 실패"})
         finally:
-            await websocket.send_json({"event": "question_audio_end"})
+            await ws_safe_send_json({"event": "question_audio_end"})
 
     def transcribe_wav(wav_bytes: bytes) -> str:
         """
@@ -633,8 +651,11 @@ async def sst_ws(websocket: WebSocket, code: str):
                     pass
 
                 if not wav_bytes:
-                    await websocket.send_json({"error": "오디오 응답이 필요합니다."})
-                    await websocket.close(code=4004)
+                    await ws_safe_send_json({"error": "오디오 응답이 필요합니다."})
+                    try:
+                        await websocket.close(code=4004)
+                    except Exception:
+                        pass
                     return
 
                 answer_text = transcribe_wav(wav_bytes)
@@ -747,7 +768,10 @@ async def sst_ws(websocket: WebSocket, code: str):
         firebase_crud.save_chat_end(session_id)
         # 종료 인사
         await stream_tts("수고하셨습니다. 면접이 종료되었습니다. 좋은 결과 있길 바랍니다.")
-        await websocket.send_json({"event": "면접 종료", "message": "모든 질문이 소진되었습니다."})
-        await websocket.close()
+        await ws_safe_send_json({"event": "면접 종료", "message": "모든 질문이 소진되었습니다."})
+        try:
+            await websocket.close()
+        except Exception:
+            pass
     except WebSocketDisconnect:
         pass

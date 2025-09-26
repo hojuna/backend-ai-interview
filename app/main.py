@@ -10,11 +10,13 @@ app = FastAPI()
 # CORS
 origins = [
     "http://localhost:5173",  # Vite 개발 서버 주소
+    "http://172.17.0.2:5173",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
