@@ -4,6 +4,7 @@ from typing import Dict, List
 
 import litellm
 from dotenv import load_dotenv
+from litellm import completion_cost
 
 # .env 파일에서 환경변수 자동 로드
 load_dotenv()
@@ -20,18 +21,19 @@ def ask_llm(prompt: str, model: str = "gemini/gemini-2.5-flash") -> str:
             response_format={"type": "json_object"},
             reasoning_effort="disable",
         )
+        cost = completion_cost(response)
         content = str(
             response.choices[0].message.content) if response.choices else ""
         try:
             test = json.loads(content)
             if isinstance(test, dict):
-                return content
+                return content, cost
             if isinstance(test, list) and len(test) > 0:
                 # 리스트의 첫 번째 요소를 다시 json string으로 변환
-                return json.dumps(test[0])
+                return json.dumps(test[0]), cost
         except Exception:
             continue
-    return content
+    return content, cost
 
 
 def generate_questions(
@@ -60,7 +62,8 @@ def generate_questions(
         ]
     }}
     """.strip()
-    result = ask_llm(prompt)
+    result, cost = ask_llm(prompt)
+    print("generate_questions cost", cost)
     try:
         data = json.loads(result)
         print(data)
@@ -124,7 +127,8 @@ FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 5개 항목에 대�
   "total_score": 78  // 100점 만점 환산 총점
 }}
 """
-    result = ask_llm(prompt)
+    result, cost = ask_llm(prompt)
+    # print("evaluate_answer cost", cost)
     try:
         data = json.loads(result)
         if isinstance(data, dict) and "categories" in data:
@@ -163,7 +167,8 @@ def generate_persona(
     }}
     """.strip()
 
-    persona = ask_llm(prompt)
+    persona, cost = ask_llm(prompt)
+    print("generate_persona cost", cost)
     try:
         persona_dict = json.loads(persona)
         if isinstance(persona_dict, list) and len(persona_dict) > 0:
@@ -199,7 +204,8 @@ def insufficient_judgment(persona: str, q_and_a_history: list) -> Dict:
         "question": 추가적인 질문 or 빈 문자열
     }}
     """
-    result = ask_llm(prompt)
+    result, cost = ask_llm(prompt)
+    print("insufficient_judgment cost", cost)
     try:
         data = json.loads(result)
         if isinstance(data, dict):
@@ -219,7 +225,8 @@ def summarize_category_feedback(category, feedbacks):
     해당 카테고리에 대한 질문이 없어 평가가 불가능한 경우 "평가가 불가능합니다" 라고 작성해줘
     답변 json 형식: {{"summary": "..."}}
     """
-    result = ask_llm(prompt)
+    result, cost = ask_llm(prompt)
+    print("summarize_category_feedback cost", cost)
     try:
         data = json.loads(result)
         if isinstance(data, dict) and "summary" in data:
@@ -368,7 +375,8 @@ FAANG 및 Microsoft 인터뷰 원칙을 참고하여, 아래 5개 항목에 대�
     "final_feedback": "최종 총평"
 }}
 """.strip()
-    final_feedback = ask_llm(summary_prompt)
+    final_feedback, cost = ask_llm(summary_prompt)
+    print("final_eval cost", cost)
     try:
         final_feedback_dict = json.loads(final_feedback)
         if isinstance(final_feedback_dict, dict):

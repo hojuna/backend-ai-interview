@@ -17,7 +17,7 @@ from app.models.schemas import (
     SessionSchema,
 )
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -71,7 +71,8 @@ def save_session_profile(session_id: str, inputs: SessionProfilePayload) -> bool
         "status": "profile_saved",
         "updated_at": datetime.now(timezone.utc),
     }
-    update_data_cleaned = {k: v for k, v in update_data.items() if v is not None}
+    update_data_cleaned = {k: v for k,
+                           v in update_data.items() if v is not None}
     try:
         session_ref.update(update_data_cleaned)
         return True
@@ -91,7 +92,8 @@ def save_session_interview_info(
         "status": "interview_info_saved",
         "updated_at": datetime.now(timezone.utc),
     }
-    update_data_cleaned = {k: v for k, v in update_data.items() if v is not None}
+    update_data_cleaned = {k: v for k,
+                           v in update_data.items() if v is not None}
     try:
         session_ref.update(update_data_cleaned)
         return True
@@ -106,7 +108,8 @@ def save_chat_end(session_id: str) -> bool:
         "status": "chat_end",
         "updated_at": datetime.now(timezone.utc),
     }
-    update_data_cleaned = {k: v for k, v in update_data.items() if v is not None}
+    update_data_cleaned = {k: v for k,
+                           v in update_data.items() if v is not None}
     try:
         session_ref.update(update_data_cleaned)
         return True
@@ -125,7 +128,8 @@ def add_interaction(
             .collection("interactions")
             .document()
         )
-        log_data = interaction_data.model_dump(exclude_unset=True, exclude={"id"})
+        log_data = interaction_data.model_dump(
+            exclude_unset=True, exclude={"id"})
         log_data["created_at"] = datetime.now(timezone.utc)
         interaction_ref.set(log_data)
         return interaction_ref.id
@@ -145,7 +149,8 @@ def get_all_questions_and_answers() -> Tuple[list, list]:
     for session in sessions:
         session_id = session.id
         interactions_ref = (
-            db.collection("sessions").document(session_id).collection("interactions")
+            db.collection("sessions").document(
+                session_id).collection("interactions")
         )
         interactions = interactions_ref.stream()
         for interaction in interactions:
