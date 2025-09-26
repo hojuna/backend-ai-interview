@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>STT/TTS WebSocket Tester</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 20px; }
+    .row { margin-bottom: 10px; }
+    label { display: inline-block; width: 120px; }
+    input[type=text] { width: 420px; }
+    button { padding: 8px 12px; }
+    #log { white-space: pre-wrap; background: #111; color: #eee; padding: 10px; height: 220px; overflow: auto; border-radius: 6px; }
+  </style>
+  <script src="https://unpkg.com/lamejs@1.2.0/lame.min.js"></script>
+</head>
+<body>
+  <h2>STT/TTS WebSocket Tester</h2>
+  <div class="row">
+    <label>Backend WS URL</label>
+    <input id="wsUrl" type="text" value="ws://localhost:8000/sessions/TESTCODE/ws/stt" />
+  </div>
+  <div class="row">
+    <button id="connectBtn">Connect</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+  </div>
+  <div class="row">
+    <button id="beepBtn">Play Test Beep</button>
+  </div>
+  <hr />
+  <div class="row">
+    <button id="recordBtn" disabled>Start Answer Recording</button>
+    <span id="recStatus"></span>
+  </div>
+  <h3>Log</h3>
+  <div id="log"></div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    function log(msg) {
+      const time = new Date().toLocaleTimeString();
+      logEl.textContent += `[${time}] ${msg}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    let ws = null;
+    let audioContext = null;
+    let gainNode = null;
+    let playHeadTime = 0; // seconds in audioContext time
+    let playerReady = false;
+    let currentQuestionConfig = { sampleRate: 24000, channels: 1, format: 'pcm_s16le' };
+    let totalBytesReceived = 0;
+    let pcmChunks = [];
+    let audioTag = null;
+
+    // Setup AudioContext lazily on first need/user gesture
+    function ensureAudioContext() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        gainNode = audioContext.createGain();
+        gainNode.gain.value = 1.2; // boost a little for audibility
+        gainNode.connect(audioContext.destination);
+        playHeadTime = audioContext.currentTime;
+      }
+      if (audioContext.state === 'suspended') { audioContext.resume().catch(()=>{}); }
+      return audioContext;
+    }
+
+    function int16ToFloat32(int16) {
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) {
+        const s = Math.max(-32768, Math.min(32767, int16[i]));
+        float32[i] = s < 0 ? s / 32768 : s / 32767;
+      }
+      return float32;
+    }
+
+    function queuePcmChunkToPlay(pcmBytes) {
+      const ac = ensureAudioContext();
+      const { sampleRate, channels } = currentQuestionConfig;
+      const int16 = new Int16Array(pcmBytes);
+      const samplesPerChannel = int16.length / channels;
+      const buffer = ac.createBuffer(channels, samplesPerChannel, sampleRate);
+      if (channels === 1) {
+        buffer.getChannelData(0).set(int16ToFloat32(int16));
+      } else {
+        // Interleaved to planar
+        const chData = new Array(channels).fill(null).map(() => new Float32Array(samplesPerChannel));
+        for (let i = 0, j = 0; i < int16.length; i += channels, j++) {
+          for (let c = 0; c < channels; c++) {
+            chData[c][j] = (int16[i + c] < 0 ? int16[i + c] / 32768 : int16[i + c] / 32767);
+          }
+        }
+        for (let c = 0; c < channels; c++) buffer.getChannelData(c).set(chData[c]);
+      }
+      const src = ac.createBufferSource();
+      src.buffer = buffer;
+      src.connect(gainNode || ac.destination);
+      const now = ac.currentTime;
+      const startAt = Math.max(playHeadTime, now + 0.02);
+      src.start(startAt);
+      playHeadTime = startAt + buffer.duration;
+    }
+
+    function handleJsonEvent(obj) {
+      if (obj.event === 'question_audio_start') {
+        currentQuestionConfig.sampleRate = obj.sample_rate || 24000;
+        currentQuestionConfig.channels = obj.channels || 1;
+        currentQuestionConfig.format = obj.format || 'pcm_s16le';
+        playerReady = true;
+        ensureAudioContext();
+        pcmChunks = [];
+        if (!audioTag) {
+          audioTag = new Audio();
+        }
+        log(`question_audio_start: ${currentQuestionConfig.sampleRate} Hz, ch=${currentQuestionConfig.channels}`);
+      } else if (obj.event === 'question_audio_end') {
+        log(`question_audio_end (bytes=${totalBytesReceived})`);
+        // Fallback: also assemble WAV and try HTMLAudio playback
+        try {
+          if (totalBytesReceived > 0 && pcmChunks.length > 0) {
+            const wav = buildWavFromPcm(pcmChunks, currentQuestionConfig.sampleRate, currentQuestionConfig.channels);
+            const url = URL.createObjectURL(wav);
+            audioTag.src = url;
+            audioTag.play().catch(()=>{});
+            log('WAV fallback playback attempted');
+          }
+        } catch (e) { log('WAV fallback failed: ' + String(e)); }
+        totalBytesReceived = 0;
+        // Enable recording now
+        recordBtn.disabled = false;
+      } else if (obj.event === '면접 종료') {
+        log('면접 종료: ' + (obj.message || ''));
+        recordBtn.disabled = true;
+      } else if (obj.event === 'stt_retry') {
+        const a = typeof obj.attempt === 'number' ? obj.attempt : 0;
+        const m = typeof obj.max_retries === 'number' ? obj.max_retries : 0;
+        log((obj.message || '다시 시도해 주세요.') + (m ? ` (${a}/${m})` : ''));
+        // Re-enable recording button for retry
+        recordBtn.disabled = false;
+        recStatus.textContent = '다시 녹음해 주세요';
+      } else if (obj.error) {
+        log('Server error: ' + obj.error);
+      }
+    }
+
+    // WebSocket connect/disconnect
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const wsUrlEl = document.getElementById('wsUrl');
+    connectBtn.addEventListener('click', () => {
+      // 브라우저 자동재생 정책 회피: 사용자 제스처 시 오디오 컨텍스트 초기화
+      ensureAudioContext();
+      if (ws) return;
+      const url = wsUrlEl.value.trim();
+      if (!url) return alert('WS URL을 입력하세요');
+      ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => { ensureAudioContext(); log('WS connected'); connectBtn.disabled = true; disconnectBtn.disabled = false; };
+      ws.onclose = () => { log('WS closed'); connectBtn.disabled = false; disconnectBtn.disabled = true; ws = null; };
+      ws.onerror = (e) => { log('WS error'); console.error(e); };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string') {
+          try { const obj = JSON.parse(ev.data); handleJsonEvent(obj); } catch { log('TEXT: ' + ev.data); }
+        } else if (ev.data instanceof ArrayBuffer) {
+          if (!playerReady) return;
+          totalBytesReceived += ev.data.byteLength;
+          queuePcmChunkToPlay(ev.data);
+          pcmChunks.push(new Uint8Array(ev.data));
+        } else if (ev.data instanceof Blob) {
+          // Convert Blob to ArrayBuffer
+          ev.data.arrayBuffer().then((buf) => {
+            if (playerReady) { totalBytesReceived += buf.byteLength; queuePcmChunkToPlay(buf); }
+            pcmChunks.push(new Uint8Array(buf));
+          });
+        }
+      };
+    });
+    disconnectBtn.addEventListener('click', () => { if (ws) ws.close(); });
+
+    // Recording with getUserMedia + MediaRecorder -> decode -> build WAV (PCM s16le, 16k mono) -> send one binary frame
+    const recordBtn = document.getElementById('recordBtn');
+    const recStatus = document.getElementById('recStatus');
+    let mediaStream = null;
+    let mediaRecorder = null;
+    let recChunks = [];
+    let isRecording = false;
+
+    async function startRecording() {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        alert('getUserMedia를 사용할 수 없습니다.');
+        return;
+      }
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+      mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+      recChunks = [];
+      mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        const webmBlob = new Blob(recChunks, { type: mediaRecorder.mimeType });
+        recStatus.textContent = '인코딩 중...';
+        try {
+          const arrayBuffer = await webmBlob.arrayBuffer();
+          const ac = ensureAudioContext();
+          const audioBuffer = await ac.decodeAudioData(arrayBuffer.slice(0));
+          // Convert to mono 16kHz PCM for WAV
+          const srcCh = audioBuffer.numberOfChannels > 0 ? audioBuffer.getChannelData(0) : new Float32Array();
+          const srcRate = audioBuffer.sampleRate;
+          const targetRate = 16000; // STT에 적합한 16kHz
+          const resampled = resampleFloat32(srcCh, srcRate, targetRate);
+          const int16 = float32ToInt16(resampled);
+          const wavBlob = buildWavFromInt16(int16, targetRate, 1);
+          recStatus.textContent = '';
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            const buf = await wavBlob.arrayBuffer();
+            ws.send(buf);
+            log(`Sent WAV answer (${(buf.byteLength/1024).toFixed(1)} KB)`);
+            recordBtn.disabled = true;
+          }
+        } catch (err) {
+          console.error(err);
+          log('인코딩 실패: ' + String(err));
+        } finally {
+          mediaStream.getTracks().forEach(t => t.stop());
+          mediaStream = null;
+          isRecording = false;
+          recordBtn.textContent = 'Start Answer Recording';
+          recStatus.textContent = '';
+        }
+      };
+      mediaRecorder.start(100);
+      isRecording = true;
+      recordBtn.textContent = 'Stop & Send';
+      recStatus.textContent = '녹음 중...';
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && isRecording) {
+        mediaRecorder.stop();
+      }
+    }
+
+    recordBtn.addEventListener('click', async () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return alert('WS가 연결되어야 합니다');
+      if (!isRecording) {
+        await startRecording();
+      } else {
+        stopRecording();
+      }
+    });
+
+    // Test beep button
+    const beepBtn = document.getElementById('beepBtn');
+    beepBtn.addEventListener('click', () => {
+      const ac = ensureAudioContext();
+      const osc = ac.createOscillator();
+      const g = ac.createGain();
+      g.gain.value = 0.05;
+      osc.frequency.value = 440;
+      osc.connect(g);
+      g.connect(gainNode || ac.destination);
+      const t0 = ac.currentTime + 0.02;
+      osc.start(t0);
+      osc.stop(t0 + 0.5);
+      log('Played test beep (0.5s, 440Hz)');
+    });
+
+    // Utility: naive resampler Float32 -> targetRate
+    function resampleFloat32(input, inputRate, targetRate) {
+      if (inputRate === targetRate) return input;
+      const ratio = inputRate / targetRate;
+      const outLen = Math.floor(input.length / ratio);
+      const output = new Float32Array(outLen);
+      let pos = 0;
+      for (let i = 0; i < outLen; i++) {
+        const idx = i * ratio;
+        const i0 = Math.floor(idx);
+        const i1 = Math.min(i0 + 1, input.length - 1);
+        const frac = idx - i0;
+        output[i] = input[i0] * (1 - frac) + input[i1] * frac;
+      }
+      return output;
+    }
+
+    // Build WAV Blob from Int16 mono samples
+    function buildWavFromInt16(int16Samples, sampleRate, channels) {
+      const blockAlign = channels * 2; // 16-bit
+      const byteRate = sampleRate * blockAlign;
+      const dataSize = int16Samples.length * 2;
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(buffer);
+      // RIFF header
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      writeString(view, 8, 'WAVE');
+      // fmt chunk
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);         // PCM chunk size
+      view.setUint16(20, 1, true);          // format = PCM
+      view.setUint16(22, channels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, 16, true);         // bitsPerSample
+      // data chunk
+      writeString(view, 36, 'data');
+      view.setUint32(40, dataSize, true);
+      // PCM data little-endian
+      let offset = 44;
+      for (let i = 0; i < int16Samples.length; i++, offset += 2) {
+        view.setInt16(offset, int16Samples[i], true);
+      }
+      return new Blob([buffer], { type: 'audio/wav' });
+    }
+
+    function float32ToInt16(float32) {
+      const len = float32.length;
+      const int16 = new Int16Array(len);
+      for (let i = 0; i < len; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      return int16;
+    }
+
+    // Build minimal WAV container (PCM s16le)
+    function buildWavFromPcm(chunks, sampleRate, channels) {
+      // concat
+      let total = 0;
+      for (const c of chunks) total += c.byteLength;
+      const pcm = new Uint8Array(total);
+      let o = 0;
+      for (const c of chunks) { pcm.set(c, o); o += c.byteLength; }
+
+      const blockAlign = channels * 2; // 16-bit
+      const byteRate = sampleRate * blockAlign;
+      const dataSize = pcm.byteLength;
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(buffer);
+      // RIFF header
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      writeString(view, 8, 'WAVE');
+      // fmt chunk
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);         // PCM chunk size
+      view.setUint16(20, 1, true);          // format = PCM
+      view.setUint16(22, channels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, 16, true);         // bitsPerSample
+      // data chunk
+      writeString(view, 36, 'data');
+      view.setUint32(40, dataSize, true);
+      new Uint8Array(buffer, 44).set(pcm);
+      return new Blob([buffer], { type: 'audio/wav' });
+    }
+    function writeString(view, offset, str) {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  </script>
+</body>
+</html>
+
+

@@ -1,15 +1,4 @@
-import os
-import re
-import uuid
-from datetime import datetime
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
-
+from app.services import firebase_crud, llm_service, rag
 from app.models.schemas import (
     EvaluationSchema,
     InteractionLogSchema,
@@ -20,7 +9,26 @@ from app.models.schemas import (
     SessionJoinResponse,
     SessionProfilePayload,
 )
-from app.services import firebase_crud, llm_service, rag
+from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from google import genai
+from google.genai import types
+from pydub import AudioSegment
+from pydub.effects import speedup
+import asyncio
+import edge_tts
+import io
+import speech_recognition as sr
+import os
+import re
+import uuid
+from datetime import datetime
+
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
+SPEED_UP_RATE = 1.3
 
 TEMP_RAG_DB = {
     "company_overview": "회사 개요",
@@ -143,7 +151,8 @@ def persona_api(code: str):
     else:
         rag_info = TEMP_RAG_DB
     persona_dict = llm_service.generate_persona(rag_info, company, position)
-    persona = persona_dict.get("persona", "") if isinstance(persona_dict, dict) else ""
+    persona = persona_dict.get("persona", "") if isinstance(
+        persona_dict, dict) else ""
     # Firestore에 persona 저장
     if not session_id:
         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
@@ -161,7 +170,7 @@ def persona_api(code: str):
     )
 
 
-## 저장된 persona 가져오기
+# 저장된 persona 가져오기
 @router.get("/sessions/{code}/persona", response_model=PersonaResponse)
 def get_persona(code: str):
     session_id = firebase_crud.get_session_id_by_code(code)
@@ -318,7 +327,8 @@ async def chat_ws(websocket: WebSocket, code: str):
             # 답변 수신
             answer = await websocket.receive_text()
             # 평가
-            evaluation = llm_service.evaluate_answer(questions[turn]["text"], answer)
+            evaluation = llm_service.evaluate_answer(
+                questions[turn]["text"], answer)
             print(evaluation)
             # dict가 아니면 빈 dict로 처리
             if not isinstance(evaluation, dict):
@@ -350,7 +360,8 @@ async def chat_ws(websocket: WebSocket, code: str):
             if avg_score is not None and avg_score < 3:
                 need_followup = True
             # 꼬리질문 최대 2회
-            q_and_a_history = [{"question": questions[turn]["text"], "answer": answer}]
+            q_and_a_history = [
+                {"question": questions[turn]["text"], "answer": answer}]
             while need_followup and followup_count < 2:
                 # insufficient_judgment를 활용해 꼬리질문 필요성 및 질문 생성
                 followup_result = llm_service.insufficient_judgment(
@@ -364,11 +375,13 @@ async def chat_ws(websocket: WebSocket, code: str):
                 followup_q = followup_result.get("question", "")
                 await websocket.send_json({"question": followup_q, "followup": True})
                 followup_answer = await websocket.receive_text()
-                followup_eval = llm_service.evaluate_answer(followup_q, followup_answer)
+                followup_eval = llm_service.evaluate_answer(
+                    followup_q, followup_answer)
                 if not isinstance(followup_eval, dict):
                     followup_eval = {}
                 followup_categories = followup_eval.get("categories", [])
-                followup_scores = [cat.get("score", 0) for cat in followup_categories]
+                followup_scores = [cat.get("score", 0)
+                                   for cat in followup_categories]
                 followup_evaluations = (
                     [EvaluationSchema(categories=followup_categories)]
                     if followup_categories
@@ -436,29 +449,305 @@ def final_eval_session(code: str):
     # 해당 세션의 인터랙션만 추출
     db = firebase_crud.get_db()
     interactions_ref = (
-        db.collection("sessions").document(session_id).collection("interactions")
+        db.collection("sessions").document(
+            session_id).collection("interactions")
     )
+    print(interactions_ref)
     interactions = list(interactions_ref.stream())
     logs = [x.to_dict() for x in interactions]
     result = llm_service.final_eval(logs)
 
-    db.collection("sessions").document(session_id).update({"final_eval": result})
+    db.collection("sessions").document(
+        session_id).update({"final_eval": result})
     return result
 
 
-# @router.get("/sessions/{code}/report", response_model=ReportResponse)
-# def get_report(code: str):
-#     session_id = firebase_crud.get_session_id_by_code(code)
-#     if not session_id:
-#         raise HTTPException(status_code=404, detail="세션 코드가 유효하지 않습니다.")
-#     db = firebase_crud.get_db()
-#     doc = db.collection("sessions").document(session_id).get()
-#     if not doc.exists:
-#         raise HTTPException(status_code=404, detail="세션이 존재하지 않습니다.")
-#     data = doc.to_dict()
-#     report = data.get("report")
-#     if not report:
-#         raise HTTPException(
-#             status_code=404, detail="리포트가 아직 생성되지 않았습니다."
-#         )
-#     return ReportResponse(**report)
+@router.websocket("/sessions/{code}/ws/stt")
+async def sst_ws(websocket: WebSocket, code: str):
+    await websocket.accept()
+    session_id = firebase_crud.get_session_id_by_code(code)
+    if not session_id:
+        await websocket.close(code=4001)
+        return
+
+    db = firebase_crud.get_db()
+    doc = db.collection("sessions").document(session_id).get()
+    if not doc.exists:
+        await websocket.close(code=4002)
+        return
+
+    data = doc.to_dict()
+    questions = data.get("questions", [])
+    if not questions:
+        await websocket.send_json({"error": "세션에 질문이 없습니다. 먼저 질문을 생성하세요."})
+        await websocket.close(code=4003)
+        return
+
+    client = genai.Client()
+    SAMPLE_RATE = 24000
+    CHANNELS = 1
+
+    # async def stream_tts(text: str, voice_name: str = "Sadaltager"):
+    #     await websocket.send_json({
+    #         "event": "question_audio_start",
+    #         "sample_rate": SAMPLE_RATE,
+    #         "channels": CHANNELS,
+    #         "format": "pcm_s16le"
+    #     })
+    #     try:
+    #         response = client.models.generate_content(
+    #             model="gemini-2.5-flash-preview-tts",
+    #             contents=text,
+    #             config=types.GenerateContentConfig(
+    #                 response_modalities=["AUDIO"],
+    #                 speech_config=types.SpeechConfig(
+    #                     voice_config=types.VoiceConfig(
+    #                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
+    #                             voice_name=voice_name,
+    #                         )
+    #                     )
+    #                 ),
+    #             ),
+    #         )
+    #         # 전체 오디오 바이트를 한 번에 전송
+    #         sent_any = False
+    #         candidates = getattr(response, "candidates", [])
+    #         if candidates:
+    #             content = getattr(candidates[0], "content", None)
+    #             if content:
+    #                 for part in getattr(content, "parts", []):
+    #                     inline = getattr(part, "inline_data", None)
+    #                     if inline and getattr(inline, "data", None):
+    #                         await websocket.send_bytes(inline.data)
+    #                         sent_any = True
+    #         if not sent_any:
+    #             await websocket.send_json({"error": "TTS 응답이 비어있습니다."})
+    #     except Exception:
+    #         await websocket.send_json({"error": "TTS 생성에 실패했습니다."})
+    #     finally:
+    #         await websocket.send_json({"event": "question_audio_end"})
+    async def stream_tts(text: str, voice_name: str = "Sadaltager"):  # voice_name은 시그니처 유지용
+        await websocket.send_json({
+            "event": "question_audio_start",
+            "sample_rate": SAMPLE_RATE,
+            "channels": CHANNELS,
+            "format": "pcm_s16le"
+        })
+        try:
+            mp3_buf = io.BytesIO()
+            # edge-tts를 통해 MP3 바이트를 생성
+            communicate = edge_tts.Communicate(
+                text, "ko-KR-HyunsuMultilingualNeural")
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio" and chunk.get("data"):
+                    mp3_buf.write(chunk["data"])
+            mp3_buf.seek(0)
+
+            # MP3 -> PCM(SAMPLE_RATE, mono, s16le) 변환 및 배속 처리(현재 1.0x)
+            seg = AudioSegment.from_file(mp3_buf, format="mp3")
+
+            try:
+                seg = speedup(seg, playback_speed=SPEED_UP_RATE)
+            except Exception:
+                # speedup 실패 시 프레임레이트 트릭으로 대체 가속
+                seg = seg._spawn(seg.raw_data, overrides={
+                    "frame_rate": int(seg.frame_rate * SPEED_UP_RATE)})
+
+            seg = seg.set_channels(CHANNELS).set_frame_rate(
+                SAMPLE_RATE).set_sample_width(2)
+            pcm_bytes = seg.raw_data
+            if pcm_bytes:
+                await websocket.send_bytes(pcm_bytes)
+            else:
+                await websocket.send_json({"error": "TTS 응답이 비어있습니다."})
+        except Exception:
+            await websocket.send_json({"error": "TTS 생성에 실패했습니다."})
+        finally:
+            await websocket.send_json({"event": "question_audio_end"})
+
+    async def stream_wav_file(file_path: str, sample_rate: int = 24000, channels: int = 1):
+        """
+        로컬 WAV/오디오 파일을 읽어 PCM s16le로 변환하여 바이너리로 스트리밍.
+        클라이언트는 'question_audio_start'/'question_audio_end' 이벤트를 재사용해 재생한다.
+        """
+        await websocket.send_json({
+            "event": "question_audio_start",
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "format": "pcm_s16le"
+        })
+        try:
+            seg = AudioSegment.from_file(file_path)
+            seg = seg.set_channels(channels).set_frame_rate(
+                sample_rate).set_sample_width(2)
+            pcm_bytes = seg.raw_data
+            if pcm_bytes:
+                await websocket.send_bytes(pcm_bytes)
+            else:
+                await websocket.send_json({"error": "재시도 안내 오디오가 비어있습니다."})
+        except Exception:
+            await websocket.send_json({"error": "재시도 안내 오디오 전송 실패"})
+        finally:
+            await websocket.send_json({"event": "question_audio_end"})
+
+    def transcribe_wav(wav_bytes: bytes) -> str:
+        """
+        클라이언트가 보낸 WAV(PCM s16le, mono, 16kHz 권장)를 그대로 Google Web Speech API(ko-KR)로 전사.
+        """
+        try:
+            wav_buf = io.BytesIO(wav_bytes)
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_buf) as source:
+                audio_data = recognizer.record(source)
+            text = recognizer.recognize_google(audio_data, language='ko-KR')
+            print("stt_text", text)
+            return text.strip()
+        except sr.UnknownValueError:
+            print("stt_unknown_error")
+            return ""
+        except Exception as e:
+            print("stt_error", e)
+            return ""
+
+    turn = 0
+    try:
+        await stream_tts("안녕하세요. 지금부터 면접을 시작하겠습니다. 질문을 들으신 뒤, 답변해주세요.")
+        await asyncio.sleep(5)
+        while turn < len(questions):
+            question_text = questions[turn]["text"]
+            await stream_tts(question_text)
+
+            # STT 재시도 루프: 인식 실패 시 같은 질문에 대해 재녹음을 요청
+            max_retries = 2
+            attempt = 0
+            answer_text = ""
+            while attempt <= max_retries and not answer_text:
+                recv = await websocket.receive()
+
+                wav_bytes = None
+                if recv.get("type") == "websocket.disconnect":
+                    break
+                if "bytes" in recv and recv["bytes"] is not None:
+                    wav_bytes = recv["bytes"]
+                elif "text" in recv and recv["text"]:
+                    pass
+
+                if not wav_bytes:
+                    await websocket.send_json({"error": "오디오 응답이 필요합니다."})
+                    await websocket.close(code=4004)
+                    return
+
+                answer_text = transcribe_wav(wav_bytes)
+                if not answer_text:
+                    attempt += 1
+                    if attempt <= max_retries:
+                        retry_audio_path = os.path.abspath(os.path.join(
+                            os.path.dirname(__file__), "../../retry_inform.wav"))
+                        await stream_wav_file(retry_audio_path, sample_rate=SAMPLE_RATE, channels=CHANNELS)
+            evaluation = llm_service.evaluate_answer(
+                question_text, answer_text)
+            if not isinstance(evaluation, dict):
+                evaluation = {}
+
+            categories = evaluation.get("categories", [])
+            scores = [cat.get("score", 0) for cat in categories]
+            evaluations = (
+                [EvaluationSchema(categories=categories)] if categories else []
+            )
+            log = InteractionLogSchema(
+                turn=turn + 1,
+                question=question_text,
+                answer=answer_text,
+                evaluation=evaluations,
+            )
+            firebase_crud.add_interaction(session_id, log)
+
+            followup_count = 0
+            avg_score = None
+            if scores and len(scores) > 0:
+                try:
+                    avg_score = sum(float(s) for s in scores) / len(scores)
+                except Exception:
+                    avg_score = None
+            need_followup = False
+            if avg_score is not None and avg_score < 3:
+                need_followup = True
+            q_and_a_history = [
+                {"question": question_text, "answer": answer_text}]
+
+            while need_followup and followup_count < 2:
+                followup_result = llm_service.insufficient_judgment(
+                    data.get("persona", ""), q_and_a_history
+                )
+                if not (isinstance(followup_result, dict) and followup_result.get("followup")):
+                    break
+                followup_q = followup_result.get("question", "")
+                await stream_tts(followup_q)
+
+                # Follow-up STT 재시도 루프
+                max_retries_fu = 2
+                attempt_fu = 0
+                followup_answer = ""
+                while attempt_fu <= max_retries_fu and not followup_answer:
+                    recv_fu = await websocket.receive()
+                    fu_wav = None
+                    if recv_fu.get("type") == "websocket.disconnect":
+                        need_followup = False
+                        break
+                    if "bytes" in recv_fu and recv_fu["bytes"] is not None:
+                        fu_wav = recv_fu["bytes"]
+                    if not fu_wav:
+                        need_followup = False
+                        break
+
+                    followup_answer = transcribe_wav(fu_wav)
+                    if not followup_answer:
+                        attempt_fu += 1
+                        if attempt_fu <= max_retries_fu:
+                            retry_audio_path = os.path.abspath(os.path.join(
+                                os.path.dirname(__file__), "../../retry_inform.wav"))
+                            await stream_wav_file(retry_audio_path, sample_rate=SAMPLE_RATE, channels=CHANNELS)
+
+                followup_eval = llm_service.evaluate_answer(
+                    followup_q, followup_answer)
+                if not isinstance(followup_eval, dict):
+                    followup_eval = {}
+                followup_categories = followup_eval.get("categories", [])
+                followup_scores = [cat.get("score", 0)
+                                   for cat in followup_categories]
+                followup_evaluations = (
+                    [EvaluationSchema(categories=followup_categories)]
+                    if followup_categories
+                    else []
+                )
+                log = InteractionLogSchema(
+                    turn=turn + 1,
+                    question=followup_q,
+                    answer=followup_answer,
+                    evaluation=followup_evaluations,
+                )
+                firebase_crud.add_interaction(session_id, log)
+                followup_count += 1
+                q_and_a_history.append(
+                    {"question": followup_q, "answer": followup_answer})
+
+                need_followup = False
+                avg_score = None
+                if followup_scores and len(followup_scores) > 0:
+                    try:
+                        avg_score = sum(
+                            float(s) for s in followup_scores) / len(followup_scores)
+                    except Exception:
+                        avg_score = None
+                if avg_score is not None and avg_score < 3:
+                    need_followup = True
+
+            turn += 1
+
+        firebase_crud.save_chat_end(session_id)
+        # 종료 인사
+        await stream_tts("수고하셨습니다. 면접이 종료되었습니다. 좋은 결과 있길 바랍니다.")
+        await websocket.send_json({"event": "면접 종료", "message": "모든 질문이 소진되었습니다."})
+        await websocket.close()
+    except WebSocketDisconnect:
+        pass
